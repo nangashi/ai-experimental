@@ -1,0 +1,2545 @@
+# ShopNow 商品レビュー機能 - 詳細実装計画書
+
+## 1. 概要
+
+### 1.1 目的
+ECサイト「ShopNow」に商品レビュー機能を追加し、ユーザーが購入した商品に対してレビュー（星評価1-5 + テキスト + 画像最大3枚）を投稿でき、商品詳細ページにレビュー一覧と平均評価を表示する機能を実装する。
+
+### 1.2 スコープ
+
+**実装対象:**
+- レビュー投稿API（画像アップロード含む）
+- レビュー一覧取得API
+- 商品詳細取得API（平均評価含む）への拡張
+- 管理者によるレビュー削除・フラグ設定API
+- フロントエンドのレビュー表示コンポーネント
+- レビュー投稿フォームコンポーネント
+- データベーススキーマ追加
+
+**実装対象外:**
+- レビューの編集機能（削除のみ対応）
+- レビューへの「役に立った」投票機能
+- 購入済み商品の検証（将来的に追加検討）
+- 画像の自動モデレーション
+- メール通知機能（基盤のみ実装、実際の送信は次フェーズ）
+
+### 1.3 前提条件
+
+- Node.js 18.x以上
+- PostgreSQL 14.x以上
+- 既存の`products`テーブルと`users`テーブルが存在
+- 既存の認証ミドルウェア（`auth.ts`）が動作中
+- S3互換ストレージへのアクセス権限が設定済み（環境変数で設定）
+- React 18.x, TypeScript 5.x
+
+### 1.4 ユーザー選定事項
+
+- **バックエンド:** Node.js + Express（既存スタック）
+- **データベース:** PostgreSQL（既存DB）
+- **画像ストレージ:** S3互換ストレージ（AWS SDK v3使用）
+- **フロントエンド:** React + TypeScript（既存スタック）
+- **画像処理:** クライアントサイドでリサイズ（browser-image-compressionライブラリ使用）
+- **HTMLサニタイゼーション:** DOMPurifyライブラリ使用
+
+---
+
+## 2. ディレクトリ/ファイル設計
+
+### 2.1 新規作成ファイル
+
+**バックエンド:**
+```
+src/
+├── controllers/
+│   └── reviewController.ts         # レビュー関連のHTTPリクエスト処理
+├── services/
+│   ├── reviewService.ts            # レビュービジネスロジック
+│   └── imageUploadService.ts      # S3画像アップロード処理
+├── repositories/
+│   └── reviewRepository.ts         # レビューDB操作
+├── models/
+│   ├── Review.ts                   # レビューエンティティ
+│   └── ReviewStatistics.ts         # レビュー集計データ
+├── middleware/
+│   └── imageUpload.ts              # 画像アップロード用ミドルウェア（multer設定）
+├── validators/
+│   └── reviewValidator.ts          # レビュー入力バリデーション
+├── errors/
+│   ├── ValidationError.ts          # バリデーションエラー（既存のカスタムエラー拡張）
+│   └── ImageUploadError.ts         # 画像アップロードエラー
+├── routes/
+│   └── reviewRoutes.ts             # レビュー関連ルート定義
+├── __tests__/
+│   ├── review.test.ts              # レビュー機能統合テスト
+│   ├── reviewService.test.ts       # レビューサービス単体テスト
+│   └── imageUploadService.test.ts  # 画像アップロードサービステスト
+└── database/
+    └── migrations/
+        └── 001_create_reviews_table.sql  # レビューテーブル作成マイグレーション
+```
+
+**フロントエンド:**
+```
+src/
+├── components/
+│   ├── reviews/
+│   │   ├── ReviewList.tsx           # レビュー一覧表示
+│   │   ├── ReviewItem.tsx           # 個別レビュー表示
+│   │   ├── ReviewForm.tsx           # レビュー投稿フォーム
+│   │   ├── StarRating.tsx           # 星評価表示コンポーネント
+│   │   ├── StarRatingInput.tsx      # 星評価入力コンポーネント
+│   │   ├── ImageUpload.tsx          # 画像アップロードUI
+│   │   └── RichTextEditor.tsx       # リッチテキストエディタ
+├── hooks/
+│   ├── useReviews.ts                # レビュー取得カスタムフック
+│   └── useReviewSubmit.ts           # レビュー投稿カスタムフック
+├── api/
+│   └── reviewApi.ts                 # レビューAPI呼び出し
+├── types/
+│   └── review.ts                    # レビュー型定義
+└── utils/
+    ├── imageCompression.ts          # 画像圧縮ユーティリティ
+    └── htmlSanitizer.ts             # HTMLサニタイゼーション
+```
+
+### 2.2 修正ファイル
+
+**バックエンド:**
+- `src/routes/index.ts` - レビュールートの追加
+- `src/controllers/productController.ts` - `getProduct`メソッドにレビュー統計情報追加
+- `src/services/productService.ts` - `findById`メソッドにレビュー統計取得ロジック追加
+- `src/models/Product.ts` - `reviewCount`と`averageRating`プロパティ追加
+- `package.json` - 新規依存関係追加
+
+**フロントエンド:**
+- `src/pages/ProductDetail.tsx` - レビューセクション追加
+- `src/types/product.ts` - 商品型に`reviewCount`と`averageRating`追加
+- `package.json` - 新規依存関係追加
+
+### 2.3 ディレクトリ構成（変更後）
+
+```
+src/
+├── controllers/
+│   ├── productController.ts        # 修正: レビュー統計追加
+│   ├── userController.ts
+│   ├── orderController.ts
+│   └── reviewController.ts         # 新規
+├── services/
+│   ├── productService.ts           # 修正: レビュー統計取得
+│   ├── userService.ts
+│   ├── orderService.ts
+│   ├── reviewService.ts            # 新規
+│   └── imageUploadService.ts       # 新規
+├── repositories/
+│   ├── productRepository.ts
+│   ├── userRepository.ts
+│   ├── orderRepository.ts
+│   └── reviewRepository.ts         # 新規
+├── models/
+│   ├── Product.ts                  # 修正: レビュー統計プロパティ追加
+│   ├── User.ts
+│   ├── Order.ts
+│   ├── Review.ts                   # 新規
+│   └── ReviewStatistics.ts         # 新規
+├── middleware/
+│   ├── auth.ts
+│   ├── errorHandler.ts
+│   └── imageUpload.ts              # 新規
+├── validators/
+│   └── reviewValidator.ts          # 新規（新規ディレクトリ）
+├── errors/
+│   ├── ValidationError.ts          # 新規（新規ディレクトリ）
+│   └── ImageUploadError.ts         # 新規
+├── routes/
+│   ├── index.ts                    # 修正: レビュールート追加
+│   └── reviewRoutes.ts             # 新規
+├── utils/
+│   └── validator.ts
+├── database/
+│   └── migrations/
+│       └── 001_create_reviews_table.sql  # 新規（新規ディレクトリ）
+├── __tests__/
+│   ├── product.test.ts
+│   ├── user.test.ts
+│   ├── order.test.ts
+│   ├── review.test.ts              # 新規
+│   ├── reviewService.test.ts       # 新規
+│   └── imageUploadService.test.ts  # 新規
+└── app.ts
+```
+
+---
+
+## 3. アーキテクチャ設計
+
+### 3.1 全体構成
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Frontend (React)                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │ ProductDetail│  │  ReviewList  │  │  ReviewForm  │  │
+│  │     Page     │  │  Component   │  │  Component   │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  │
+│         │                  │                  │          │
+│         └──────────────────┼──────────────────┘          │
+│                            │                             │
+└────────────────────────────┼─────────────────────────────┘
+                             │ HTTPS
+┌────────────────────────────┼─────────────────────────────┐
+│                     Backend (Express)                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │   Product    │  │    Review    │  │ ImageUpload  │  │
+│  │  Controller  │  │  Controller  │  │   Middleware │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  │
+│         │                  │                  │          │
+│  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐  │
+│  │   Product    │  │    Review    │  │ ImageUpload  │  │
+│  │   Service    │  │   Service    │  │   Service    │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────┘  │
+│         │                  │                  │          │
+│  ┌──────┴───────┐  ┌──────┴───────┐          │          │
+│  │   Product    │  │    Review    │          │          │
+│  │  Repository  │  │  Repository  │          │          │
+│  └──────┬───────┘  └──────┬───────┘          │          │
+└─────────┼────────────────┼───────────────────┼──────────┘
+          │                 │                   │
+┌─────────┴─────────────────┴──────┐  ┌─────────┴─────────┐
+│         PostgreSQL                │  │   S3 Storage      │
+│  ┌──────────┐  ┌──────────┐      │  │  (Review Images)  │
+│  │ products │  │ reviews  │      │  │                   │
+│  └──────────┘  └──────────┘      │  └───────────────────┘
+└───────────────────────────────────┘
+```
+
+**データフロー:**
+
+1. **レビュー投稿フロー:**
+   - ユーザーがReviewFormで入力 → クライアント側で画像圧縮 → ReviewController.createReview() → ImageUploadService.uploadImages() (S3) → ReviewService.createReview() → ReviewRepository.create() → DB保存 → レスポンス返却
+
+2. **レビュー一覧表示フロー:**
+   - ProductDetailページ表示 → ReviewList.useReviews() → reviewApi.fetchReviews() → ReviewController.getProductReviews() → ReviewService.getReviewsByProductId() → ReviewRepository.findByProductId() → DB取得 → フロントエンドで平均評価計算 → 表示
+
+3. **商品詳細+レビュー統計フロー:**
+   - ProductController.getProduct() → ProductService.findById() → ReviewService.getStatisticsByProductId() → ReviewRepository.getStatisticsByProductId() → 集計結果と商品情報を結合 → レスポンス返却
+
+### 3.2 主要コンポーネント
+
+#### 3.2.1 ReviewController
+**責務:** HTTPリクエスト/レスポンス処理、リクエストバリデーション呼び出し、認証確認
+
+#### 3.2.2 ReviewService
+**責務:** レビュービジネスロジック、トランザクション管理、画像アップロードサービス呼び出し、レビュー統計計算
+
+#### 3.2.3 ReviewRepository
+**責務:** データベースCRUD操作、SQL実行、レビュー集計クエリ
+
+#### 3.2.4 ImageUploadService
+**責務:** S3への画像アップロード、URLパス生成、エラーハンドリング
+
+#### 3.2.5 ReviewList (Frontend)
+**責務:** レビュー一覧表示、平均評価表示、ページネーション（将来拡張）
+
+#### 3.2.6 ReviewForm (Frontend)
+**責務:** レビュー入力フォーム、画像アップロードUI、バリデーション、API送信
+
+---
+
+## 4. データモデルとスキーマ設計
+
+### 4.1 新規データモデル
+
+#### 4.1.1 Review（バックエンドモデル）
+
+**ファイル:** `src/models/Review.ts`
+
+```typescript
+export class Review {
+  id: string;
+  productId: string;
+  userId: string;
+  rating: number;              // 1-5の整数
+  title: string;               // 最大200文字
+  body: string;                // HTMLテキスト、最大5000文字
+  images: string[];            // S3 URLの配列、最大3要素
+  flagged: boolean;            // 管理者フラグ
+  createdAt: Date;
+  updatedAt: Date;
+
+  constructor(data: ReviewData) {
+    this.id = data.id;
+    this.productId = data.product_id;
+    this.userId = data.user_id;
+    this.rating = data.rating;
+    this.title = data.title;
+    this.body = data.body;
+    this.images = data.images || [];
+    this.flagged = data.flagged || false;
+    this.createdAt = new Date(data.created_at);
+    this.updatedAt = new Date(data.updated_at);
+  }
+
+  // DB行からインスタンス生成
+  static fromDatabase(row: any): Review {
+    return new Review(row);
+  }
+
+  // JSONシリアライズ用
+  toJSON(): ReviewJSON {
+    return {
+      id: this.id,
+      productId: this.productId,
+      userId: this.userId,
+      rating: this.rating,
+      title: this.title,
+      body: this.body,
+      images: this.images,
+      flagged: this.flagged,
+      createdAt: this.createdAt.toISOString(),
+      updatedAt: this.updatedAt.toISOString()
+    };
+  }
+}
+
+interface ReviewData {
+  id: string;
+  product_id: string;
+  user_id: string;
+  rating: number;
+  title: string;
+  body: string;
+  images?: string[];
+  flagged?: boolean;
+  created_at: string | Date;
+  updated_at: string | Date;
+}
+
+interface ReviewJSON {
+  id: string;
+  productId: string;
+  userId: string;
+  rating: number;
+  title: string;
+  body: string;
+  images: string[];
+  flagged: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+**設計判断根拠:**
+- `images`を配列として持つことで、最大3枚の画像を柔軟に扱える
+- `flagged`フィールドで不適切レビューを論理削除せずフラグ管理（削除は物理削除）
+- `body`はHTMLテキストとして保存し、フロントエンドでサニタイズ後表示
+- snake_caseのDB命名とcamelCaseのTypeScript命名の変換ロジックをコンストラクタに集約
+
+#### 4.1.2 ReviewStatistics（集計データモデル）
+
+**ファイル:** `src/models/ReviewStatistics.ts`
+
+```typescript
+export class ReviewStatistics {
+  productId: string;
+  totalCount: number;
+  averageRating: number;       // 小数点第2位まで
+  ratingDistribution: {        // 星ごとの件数
+    1: number;
+    2: number;
+    3: number;
+    4: number;
+    5: number;
+  };
+
+  constructor(data: ReviewStatisticsData) {
+    this.productId = data.productId;
+    this.totalCount = data.totalCount;
+    this.averageRating = Math.round(data.averageRating * 100) / 100; // 小数第2位まで
+    this.ratingDistribution = data.ratingDistribution || { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  }
+
+  static createEmpty(productId: string): ReviewStatistics {
+    return new ReviewStatistics({
+      productId,
+      totalCount: 0,
+      averageRating: 0,
+      ratingDistribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+    });
+  }
+
+  toJSON(): ReviewStatisticsJSON {
+    return {
+      productId: this.productId,
+      totalCount: this.totalCount,
+      averageRating: this.averageRating,
+      ratingDistribution: this.ratingDistribution
+    };
+  }
+}
+
+interface ReviewStatisticsData {
+  productId: string;
+  totalCount: number;
+  averageRating: number;
+  ratingDistribution?: {
+    1: number;
+    2: number;
+    3: number;
+    4: number;
+    5: number;
+  };
+}
+
+interface ReviewStatisticsJSON {
+  productId: string;
+  totalCount: number;
+  averageRating: number;
+  ratingDistribution: {
+    1: number;
+    2: number;
+    3: number;
+    4: number;
+    5: number;
+  };
+}
+```
+
+**設計判断根拠:**
+- `averageRating`は毎回DB集計関数で計算（キャッシュなし）、リアルタイム性を優先
+- `ratingDistribution`は将来的な評価分布グラフ表示のために含める
+- `createEmpty`で商品にレビューがない場合のデフォルト値生成
+
+#### 4.1.3 Review（フロントエンド型定義）
+
+**ファイル:** `src/types/review.ts`
+
+```typescript
+export interface Review {
+  id: string;
+  productId: string;
+  userId: string;
+  userName?: string;           // ユーザー情報結合時に追加
+  rating: number;
+  title: string;
+  body: string;                // サニタイズ済みHTML
+  images: string[];
+  flagged: boolean;
+  createdAt: string;           // ISO8601文字列
+  updatedAt: string;
+}
+
+export interface ReviewStatistics {
+  productId: string;
+  totalCount: number;
+  averageRating: number;
+  ratingDistribution: {
+    1: number;
+    2: number;
+    3: number;
+    4: number;
+    5: number;
+  };
+}
+
+export interface CreateReviewRequest {
+  productId: string;
+  rating: number;
+  title: string;
+  body: string;
+  images: File[];              // アップロード前のFileオブジェクト
+}
+
+export interface CreateReviewPayload {
+  productId: string;
+  rating: number;
+  title: string;
+  body: string;
+  imageUrls: string[];         // S3アップロード後のURL
+}
+```
+
+### 4.2 スキーマ変更
+
+#### 4.2.1 新規テーブル: reviews
+
+**ファイル:** `src/database/migrations/001_create_reviews_table.sql`
+
+```sql
+-- レビューテーブル作成
+CREATE TABLE reviews (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+  title VARCHAR(200) NOT NULL,
+  body TEXT NOT NULL CHECK (char_length(body) <= 5000),
+  images TEXT[] DEFAULT '{}',
+  flagged BOOLEAN DEFAULT false,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  
+  -- インデックス
+  CONSTRAINT reviews_product_user_unique UNIQUE (product_id, user_id)
+);
+
+-- パフォーマンス最適化用インデックス
+CREATE INDEX idx_reviews_product_id ON reviews(product_id);
+CREATE INDEX idx_reviews_user_id ON reviews(user_id);
+CREATE INDEX idx_reviews_created_at ON reviews(created_at DESC);
+CREATE INDEX idx_reviews_flagged ON reviews(flagged) WHERE flagged = true;
+
+-- 更新日時自動更新トリガー
+CREATE OR REPLACE FUNCTION update_reviews_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_reviews_updated_at
+  BEFORE UPDATE ON reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION update_reviews_updated_at();
+
+-- コメント
+COMMENT ON TABLE reviews IS '商品レビューテーブル';
+COMMENT ON COLUMN reviews.rating IS '星評価（1-5）';
+COMMENT ON COLUMN reviews.body IS 'HTMLリッチテキスト（最大5000文字）';
+COMMENT ON COLUMN reviews.images IS 'S3画像URLの配列（最大3要素）';
+COMMENT ON COLUMN reviews.flagged IS '不適切コンテンツフラグ（管理者設定）';
+COMMENT ON CONSTRAINT reviews_product_user_unique ON reviews IS '1ユーザー1商品につき1レビューのみ';
+```
+
+**設計判断根拠:**
+- `reviews_product_user_unique`制約で1ユーザーが同一商品に複数レビューを投稿できないようにする（要件明示なしだが、一般的なECサイトのベストプラクティス）
+- `ON DELETE CASCADE`で商品削除時にレビューも自動削除、ユーザー削除時も同様
+- `images`をTEXT[]で保存（PostgreSQL配列型）、最大3要素はアプリケーション層でバリデーション
+- `flagged`インデックスは部分インデックス（`WHERE flagged = true`）で管理者画面の効率化
+- `created_at`降順インデックスで新着順取得を最適化
+
+#### 4.2.2 既存テーブル修正: products
+
+**変更なし（テーブル構造は変更せず、アプリケーション層でレビュー統計を動的に取得）**
+
+**設計判断根拠:**
+- `products`テーブルに`average_rating`や`review_count`カラムを追加すると、レビュー投稿/削除のたびに更新が必要になり、トランザクション複雑化とデータ不整合リスクが増加
+- 集計クエリで動的計算する方式を採用（パフォーマンスが問題になった場合はマテリアライズドビューやキャッシュを検討）
+
+### 4.3 データモデル間の関連
+
+```
+┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+│   users     │         │  products   │         │   reviews   │
+│─────────────│         │─────────────│         │─────────────│
+│ id (PK)     │◄───┐    │ id (PK)     │◄───┐    │ id (PK)     │
+│ name        │    │    │ name        │    │    │ product_id  │──┐
+│ email       │    │    │ price       │    │    │ user_id     │──┼─┐
+│ ...         │    │    │ ...         │    │    │ rating      │  │ │
+└─────────────┘    │    └─────────────┘    │    │ title       │  │ │
+                   │                        │    │ body        │  │ │
+                   └────────────────────────┼────│ images[]    │  │ │
+                                            └────│ flagged     │  │ │
+                                                 │ created_at  │  │ │
+                                                 │ updated_at  │  │ │
+                                                 └─────────────┘  │ │
+                                                        │         │ │
+                                                        └─────────┘ │
+                                                                    │
+                                                                    │
+                                        UNIQUE (product_id, user_id)
+```
+
+**関連:**
+- `reviews.product_id` → `products.id` (N:1、CASCADE DELETE)
+- `reviews.user_id` → `users.id` (N:1、CASCADE DELETE)
+- 複合UNIQUE制約: (product_id, user_id) - 1ユーザー1商品1レビュー
+
+---
+
+## 5. セキュリティとエラーハンドリング
+
+### 5.1 入力バリデーション
+
+#### 5.1.1 ReviewValidator
+
+**ファイル:** `src/validators/reviewValidator.ts`
+
+```typescript
+import { body, param, ValidationChain } from 'express-validator';
+
+export class ReviewValidator {
+  static createReview(): ValidationChain[] {
+    return [
+      body('productId')
+        .isUUID(4).withMessage('Invalid product ID format')
+        .notEmpty().withMessage('Product ID is required'),
+      
+      body('rating')
+        .isInt({ min: 1, max: 5 }).withMessage('Rating must be an integer between 1 and 5')
+        .notEmpty().withMessage('Rating is required'),
+      
+      body('title')
+        .isString().withMessage('Title must be a string')
+        .trim()
+        .isLength({ min: 1, max: 200 }).withMessage('Title must be between 1 and 200 characters')
+        .notEmpty().withMessage('Title is required'),
+      
+      body('body')
+        .isString().withMessage('Body must be a string')
+        .trim()
+        .isLength({ min: 1, max: 5000 }).withMessage('Body must be between 1 and 5000 characters')
+        .notEmpty().withMessage('Body is required')
+        .custom((value) => {
+          // 基本的なHTMLタグのみ許可（サーバー側でもチェック）
+          const allowedTagsRegex = /<\/?(?:p|br|strong|em|u|ul|ol|li|a|h[1-6])(?:\s+[^>]*)?>/gi;
+          const strippedValue = value.replace(allowedTagsRegex, '');
+          if (/<[^>]+>/.test(strippedValue)) {
+            throw new Error('Body contains disallowed HTML tags');
+          }
+          return true;
+        }),
+      
+      body('imageUrls')
+        .optional()
+        .isArray({ max: 3 }).withMessage('Maximum 3 images allowed')
+        .custom((urls: string[]) => {
+          if (urls.length > 3) {
+            throw new Error('Maximum 3 images allowed');
+          }
+          for (const url of urls) {
+            if (typeof url !== 'string' || !url.startsWith('https://')) {
+              throw new Error('All image URLs must be valid HTTPS URLs');
+            }
+            // S3 URLパターンチェック（環境変数のバケット名と一致）
+            const s3BucketUrl = process.env.S3_BUCKET_URL;
+            if (!url.startsWith(s3BucketUrl)) {
+              throw new Error('Image URLs must be from the configured S3 bucket');
+            }
+          }
+          return true;
+        })
+    ];
+  }
+
+  static getProductReviews(): ValidationChain[] {
+    return [
+      param('productId')
+        .isUUID(4).withMessage('Invalid product ID format')
+        .notEmpty().withMessage('Product ID is required')
+    ];
+  }
+
+  static deleteReview(): ValidationChain[] {
+    return [
+      param('reviewId')
+        .isUUID(4).withMessage('Invalid review ID format')
+        .notEmpty().withMessage('Review ID is required')
+    ];
+  }
+
+  static flagReview(): ValidationChain[] {
+    return [
+      param('reviewId')
+        .isUUID(4).withMessage('Invalid review ID format')
+        .notEmpty().withMessage('Review ID is required'),
+      
+      body('flagged')
+        .isBoolean().withMessage('Flagged must be a boolean')
+        .notEmpty().withMessage('Flagged is required')
+    ];
+  }
+}
+```
+
+**設計判断根拠:**
+- express-validatorを使用（既存コードベースのバリデーションパターンと一貫性を保つ）
+- `body`のHTMLタグ検証は許可リストベース（ホワイトリスト方式）
+- `imageUrls`はS3バケットURLのみ許可（不正な外部URL防止）
+- フロントエンドでもバリデーション実施（二重チェック）
+
+#### 5.1.2 フロントエンドバリデーション
+
+**実装箇所:** `ReviewForm.tsx`
+
+- 星評価: 1-5の選択必須
+- タイトル: 1-200文字
+- 本文: 1-5000文字（リッチテキストエディタ側でカウント）
+- 画像: 最大3枚、各5MB以下、JPEG/PNG/WebP形式のみ
+- 送信前にDOMPurifyでHTMLサニタイズ
+
+### 5.2 認証・認可
+
+#### 5.2.1 認証ミドルウェア（既存）
+
+**ファイル:** `src/middleware/auth.ts`（既存を使用）
+
+- JWTトークンベース認証（既存システム）
+- `req.user`にユーザー情報を設定
+
+#### 5.2.2 認可ルール
+
+**レビュー投稿（POST /api/reviews）:**
+- ログインユーザーのみ（authミドルウェア必須）
+
+**レビュー一覧取得（GET /api/products/:productId/reviews）:**
+- 認証不要（公開API）
+
+**レビュー削除（DELETE /api/reviews/:reviewId）:**
+- ログインユーザーで、かつ以下のいずれか:
+  - レビュー投稿者本人（`review.userId === req.user.id`）
+  - 管理者ユーザー（`req.user.role === 'admin'`）
+
+**レビューフラグ設定（PATCH /api/reviews/:reviewId/flag）:**
+- 管理者ユーザーのみ（`req.user.role === 'admin'`）
+
+**実装:**
+```typescript
+// src/middleware/auth.ts に追加
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user || req.user.role !== 'admin') {
+    return next(new ForbiddenError('Admin access required'));
+  }
+  next();
+}
+
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return next(new UnauthorizedError('Authentication required'));
+  }
+  next();
+}
+```
+
+### 5.3 エラーハンドリング方針
+
+#### 5.3.1 カスタムエラークラス（新規）
+
+**ファイル:** `src/errors/ValidationError.ts`
+
+```typescript
+export class ValidationError extends Error {
+  statusCode: number = 400;
+  errors: Array<{ field: string; message: string }>;
+
+  constructor(errors: Array<{ field: string; message: string }>) {
+    super('Validation failed');
+    this.name = 'ValidationError';
+    this.errors = errors;
+  }
+}
+```
+
+**ファイル:** `src/errors/ImageUploadError.ts`
+
+```typescript
+export class ImageUploadError extends Error {
+  statusCode: number = 500;
+  originalError?: Error;
+
+  constructor(message: string, originalError?: Error) {
+    super(message);
+    this.name = 'ImageUploadError';
+    this.originalError = originalError;
+  }
+}
+```
+
+**既存エラークラス（想定）:**
+- `NotFoundError` (404)
+- `UnauthorizedError` (401)
+- `ForbiddenError` (403)
+
+#### 5.3.2 エラーハンドリングフロー
+
+1. **バリデーションエラー:**
+   - express-validatorの`validationResult`でチェック
+   - エラーがあれば`ValidationError`をスロー
+   - `errorHandlerミドルウェア`でキャッチし、400レスポンス
+
+2. **認証・認可エラー:**
+   - `authミドルウェア`で`UnauthorizedError`または`ForbiddenError`をスロー
+   - 401/403レスポンス
+
+3. **データベースエラー:**
+   - UNIQUE制約違反（同一ユーザーの重複レビュー）→ 409 Conflict
+   - NOT NULL制約違反 → 500 Internal Server Error
+   - 外部キー制約違反（存在しない商品/ユーザー） → 404 Not Found
+
+4. **S3アップロードエラー:**
+   - `ImageUploadService`で`ImageUploadError`をスロー
+   - 500レスポンス、エラーログ記録
+
+5. **その他のエラー:**
+   - 予期しないエラーは全て500レスポンス
+   - エラーログに詳細を記録（スタックトレース含む）
+
+#### 5.3.3 エラーハンドリングミドルウェア修正
+
+**ファイル:** `src/middleware/errorHandler.ts`（既存に追加）
+
+```typescript
+// 既存のerrorHandlerミドルウェアに以下のケースを追加
+if (error instanceof ValidationError) {
+  return res.status(400).json({
+    error: {
+      type: 'ValidationError',
+      message: error.message,
+      details: error.errors
+    }
+  });
+}
+
+if (error instanceof ImageUploadError) {
+  logger.error('Image upload failed', { error: error.originalError });
+  return res.status(500).json({
+    error: {
+      type: 'ImageUploadError',
+      message: 'Failed to upload images'
+    }
+  });
+}
+
+// PostgreSQL UNIQUE制約違反
+if (error.code === '23505' && error.constraint === 'reviews_product_user_unique') {
+  return res.status(409).json({
+    error: {
+      type: 'ConflictError',
+      message: 'You have already reviewed this product'
+    }
+  });
+}
+```
+
+### 5.4 セキュリティ対策
+
+#### 5.4.1 XSS対策
+
+**バックエンド:**
+- レビュー本文のHTMLタグを許可リストベースでバリデーション（ReviewValidator）
+- 保存前にサニタイズは行わず、生のHTMLを保存（バージョン管理・監査のため）
+
+**フロントエンド:**
+- DOMPurifyで表示前にサニタイズ（`src/utils/htmlSanitizer.ts`）
+- `dangerouslySetInnerHTML`使用時は必ずサニタイズ済みHTMLのみ使用
+- 画像URLは`<img>`タグのsrc属性にのみ使用（`onerror`属性などは削除）
+
+```typescript
+// src/utils/htmlSanitizer.ts
+import DOMPurify from 'dompurify';
+
+export function sanitizeHTML(html: string): string {
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'ul', 'ol', 'li', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
+    ALLOWED_ATTR: ['href', 'target', 'rel'],
+    ALLOW_DATA_ATTR: false
+  });
+}
+```
+
+#### 5.4.2 SQLインジェクション対策
+
+- プリペアドステートメント（パラメータ化クエリ）のみ使用
+- 文字列結合によるSQL構築は禁止
+
+#### 5.4.3 CSRF対策
+
+- 既存のCSRF対策（csurfミドルウェアなど）を継承
+- APIがトークンベース認証の場合はSameSite cookieとOriginヘッダー検証
+
+#### 5.4.4 ファイルアップロード対策
+
+**バックエンド:**
+- multerで`limits.fileSize: 5MB`、`limits.files: 3`設定
+- MIMEタイプチェック（`image/jpeg`, `image/png`, `image/webp`のみ）
+- ファイル名をUUIDでリネーム（パストラバーサル防止）
+- S3バケットポリシーで公開読み取り許可、書き込みは特定IAMロールのみ
+
+**フロントエンド:**
+- ファイルタイプチェック（`accept="image/jpeg,image/png,image/webp"`）
+- クライアント側で5MB以下に圧縮（browser-image-compression）
+
+#### 5.4.5 レート制限
+
+- 既存のレート制限ミドルウェア（express-rate-limitなど）を適用
+- レビュー投稿APIには特に厳格な制限（例: 1分間に1回まで）
+
+```typescript
+// src/routes/reviewRoutes.ts
+import rateLimit from 'express-rate-limit';
+
+const createReviewLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1分
+  max: 1,
+  message: 'Too many reviews created, please try again later'
+});
+
+router.post('/reviews', createReviewLimiter, requireAuth, ...);
+```
+
+---
+
+## 6. 実装詳細仕様
+
+### 6.1 ReviewController
+
+**ファイル:** `src/controllers/reviewController.ts`
+
+#### 責務
+- HTTPリクエスト/レスポンス処理
+- バリデーション結果確認
+- ReviewServiceへの委譲
+- エラーハンドリング
+
+#### インターフェース
+
+```typescript
+export class ReviewController {
+  constructor(private reviewService: ReviewService) {}
+
+  async createReview(req: Request, res: Response, next: NextFunction): Promise<void>;
+  async getProductReviews(req: Request, res: Response, next: NextFunction): Promise<void>;
+  async deleteReview(req: Request, res: Response, next: NextFunction): Promise<void>;
+  async flagReview(req: Request, res: Response, next: NextFunction): Promise<void>;
+}
+```
+
+#### 内部ロジック
+
+**createReview:**
+```typescript
+async createReview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    // バリデーション結果確認
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new ValidationError(errors.array().map(e => ({ field: e.param, message: e.msg })));
+    }
+
+    const { productId, rating, title, body, imageUrls } = req.body;
+    const userId = req.user.id; // authミドルウェアで設定済み
+
+    // ReviewServiceにレビュー作成を委譲
+    const review = await this.reviewService.createReview({
+      productId,
+      userId,
+      rating,
+      title,
+      body,
+      images: imageUrls || []
+    });
+
+    res.status(201).json({ data: review.toJSON() });
+  } catch (error) {
+    next(error);
+  }
+}
+```
+
+**getProductReviews:**
+```typescript
+async getProductReviews(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new ValidationError(errors.array().map(e => ({ field: e.param, message: e.msg })));
+    }
+
+    const productId = req.params.productId;
+
+    // レビュー一覧とユーザー情報を取得
+    const reviews = await this.reviewService.getReviewsByProductId(productId);
+
+    res.json({ data: reviews.map(r => r.toJSON()) });
+  } catch (error) {
+    next(error);
+  }
+}
+```
+
+**deleteReview:**
+```typescript
+async deleteReview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new ValidationError(errors.array().map(e => ({ field: e.param, message: e.msg })));
+    }
+
+    const reviewId = req.params.reviewId;
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin';
+
+    // レビュー取得して権限確認
+    const review = await this.reviewService.getReviewById(reviewId);
+    if (!review) {
+      throw new NotFoundError('Review not found');
+    }
+
+    // 投稿者本人または管理者のみ削除可能
+    if (review.userId !== userId && !isAdmin) {
+      throw new ForbiddenError('You do not have permission to delete this review');
+    }
+
+    await this.reviewService.deleteReview(reviewId);
+
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+}
+```
+
+**flagReview:**
+```typescript
+async flagReview(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      throw new ValidationError(errors.array().map(e => ({ field: e.param, message: e.msg })));
+    }
+
+    const reviewId = req.params.reviewId;
+    const { flagged } = req.body;
+
+    const review = await this.reviewService.flagReview(reviewId, flagged);
+    if (!review) {
+      throw new NotFoundError('Review not found');
+    }
+
+    res.json({ data: review.toJSON() });
+  } catch (error) {
+    next(error);
+  }
+}
+```
+
+#### 依存関係
+- `ReviewService`
+- `express-validator`の`validationResult`
+- カスタムエラークラス（`ValidationError`, `NotFoundError`, `ForbiddenError`）
+- `authミドルウェア`（`req.user`に依存）
+
+#### エッジケース
+- バリデーションエラー → 400レスポンス
+- 認証されていないユーザー → 401レスポンス（authミドルウェアで処理）
+- 権限のないユーザー → 403レスポンス
+- 存在しないレビュー → 404レスポンス
+- UNIQUE制約違反（重複レビュー） → 409レスポンス（errorHandlerで処理）
+
+---
+
+### 6.2 ReviewService
+
+**ファイル:** `src/services/reviewService.ts`
+
+#### 責務
+- レビュービジネスロジック
+- トランザクション管理（将来的に追加）
+- レビュー統計計算の呼び出し
+- ReviewRepositoryへの委譲
+
+#### インターフェース
+
+```typescript
+export class ReviewService {
+  constructor(
+    private reviewRepository: ReviewRepository,
+    private userRepository: UserRepository
+  ) {}
+
+  async createReview(data: CreateReviewData): Promise<Review>;
+  async getReviewsByProductId(productId: string): Promise<Review[]>;
+  async getReviewById(reviewId: string): Promise<Review | null>;
+  async deleteReview(reviewId: string): Promise<void>;
+  async flagReview(reviewId: string, flagged: boolean): Promise<Review | null>;
+  async getStatisticsByProductId(productId: string): Promise<ReviewStatistics>;
+}
+
+interface CreateReviewData {
+  productId: string;
+  userId: string;
+  rating: number;
+  title: string;
+  body: string;
+  images: string[];
+}
+```
+
+#### 内部ロジック
+
+**createReview:**
+```typescript
+async createReview(data: CreateReviewData): Promise<Review> {
+  // Repositoryでレビュー作成
+  const review = await this.reviewRepository.create(data);
+  
+  // 将来的な拡張: 商品投稿者へのメール通知
+  // await this.notificationService.notifyProductOwner(review);
+  
+  return review;
+}
+```
+
+**getReviewsByProductId:**
+```typescript
+async getReviewsByProductId(productId: string): Promise<Review[]> {
+  // Repositoryでレビュー一覧取得（ユーザー情報結合済み）
+  const reviews = await this.reviewRepository.findByProductId(productId);
+  return reviews;
+}
+```
+
+**getReviewById:**
+```typescript
+async getReviewById(reviewId: string): Promise<Review | null> {
+  return this.reviewRepository.findById(reviewId);
+}
+```
+
+**deleteReview:**
+```typescript
+async deleteReview(reviewId: string): Promise<void> {
+  await this.reviewRepository.delete(reviewId);
+}
+```
+
+**flagReview:**
+```typescript
+async flagReview(reviewId: string, flagged: boolean): Promise<Review | null> {
+  return this.reviewRepository.updateFlag(reviewId, flagged);
+}
+```
+
+**getStatisticsByProductId:**
+```typescript
+async getStatisticsByProductId(productId: string): Promise<ReviewStatistics> {
+  const stats = await this.reviewRepository.getStatisticsByProductId(productId);
+  return stats || ReviewStatistics.createEmpty(productId);
+}
+```
+
+#### 依存関係
+- `ReviewRepository`
+- `UserRepository`（将来的なユーザー情報取得用）
+
+#### エッジケース
+- 存在しない商品へのレビュー → 外部キー制約違反、Repositoryで404エラー
+- 重複レビュー → UNIQUE制約違反、Repositoryで409エラー
+- レビューが0件の商品の統計 → `ReviewStatistics.createEmpty()`で空統計を返す
+
+---
+
+### 6.3 ReviewRepository
+
+**ファイル:** `src/repositories/reviewRepository.ts`
+
+#### 責務
+- データベースCRUD操作
+- SQL実行
+- レビュー集計クエリ
+
+#### インターフェース
+
+```typescript
+export class ReviewRepository {
+  async create(data: CreateReviewData): Promise<Review>;
+  async findByProductId(productId: string): Promise<Review[]>;
+  async findById(reviewId: string): Promise<Review | null>;
+  async delete(reviewId: string): Promise<void>;
+  async updateFlag(reviewId: string, flagged: boolean): Promise<Review | null>;
+  async getStatisticsByProductId(productId: string): Promise<ReviewStatistics | null>;
+}
+
+interface CreateReviewData {
+  productId: string;
+  userId: string;
+  rating: number;
+  title: string;
+  body: string;
+  images: string[];
+}
+```
+
+#### 内部ロジック
+
+**create:**
+```typescript
+async create(data: CreateReviewData): Promise<Review> {
+  const query = `
+    INSERT INTO reviews (product_id, user_id, rating, title, body, images)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING *
+  `;
+  
+  try {
+    const result = await db.query(query, [
+      data.productId,
+      data.userId,
+      data.rating,
+      data.title,
+      data.body,
+      data.images
+    ]);
+    
+    return Review.fromDatabase(result.rows[0]);
+  } catch (error: any) {
+    // UNIQUE制約違反
+    if (error.code === '23505' && error.constraint === 'reviews_product_user_unique') {
+      throw new ConflictError('You have already reviewed this product');
+    }
+    // 外部キー制約違反
+    if (error.code === '23503') {
+      if (error.constraint === 'reviews_product_id_fkey') {
+        throw new NotFoundError('Product not found');
+      }
+      if (error.constraint === 'reviews_user_id_fkey') {
+        throw new NotFoundError('User not found');
+      }
+    }
+    throw error;
+  }
+}
+```
+
+**findByProductId:**
+```typescript
+async findByProductId(productId: string): Promise<Review[]> {
+  const query = `
+    SELECT 
+      r.*,
+      u.name as user_name
+    FROM reviews r
+    JOIN users u ON r.user_id = u.id
+    WHERE r.product_id = $1
+    ORDER BY r.created_at DESC
+  `;
+  
+  const result = await db.query(query, [productId]);
+  return result.rows.map(row => {
+    const review = Review.fromDatabase(row);
+    // ユーザー名を追加（Review型には含まれないが、フロントエンドで使用）
+    (review as any).userName = row.user_name;
+    return review;
+  });
+}
+```
+
+**findById:**
+```typescript
+async findById(reviewId: string): Promise<Review | null> {
+  const query = 'SELECT * FROM reviews WHERE id = $1';
+  const result = await db.query(query, [reviewId]);
+  
+  if (result.rows.length === 0) {
+    return null;
+  }
+  
+  return Review.fromDatabase(result.rows[0]);
+}
+```
+
+**delete:**
+```typescript
+async delete(reviewId: string): Promise<void> {
+  const query = 'DELETE FROM reviews WHERE id = $1';
+  await db.query(query, [reviewId]);
+}
+```
+
+**updateFlag:**
+```typescript
+async updateFlag(reviewId: string, flagged: boolean): Promise<Review | null> {
+  const query = `
+    UPDATE reviews
+    SET flagged = $1
+    WHERE id = $2
+    RETURNING *
+  `;
+  
+  const result = await db.query(query, [flagged, reviewId]);
+  
+  if (result.rows.length === 0) {
+    return null;
+  }
+  
+  return Review.fromDatabase(result.rows[0]);
+}
+```
+
+**getStatisticsByProductId:**
+```typescript
+async getStatisticsByProductId(productId: string): Promise<ReviewStatistics | null> {
+  const query = `
+    SELECT
+      product_id,
+      COUNT(*)::int as total_count,
+      COALESCE(AVG(rating), 0)::numeric as average_rating,
+      COUNT(CASE WHEN rating = 1 THEN 1 END)::int as rating_1,
+      COUNT(CASE WHEN rating = 2 THEN 1 END)::int as rating_2,
+      COUNT(CASE WHEN rating = 3 THEN 1 END)::int as rating_3,
+      COUNT(CASE WHEN rating = 4 THEN 1 END)::int as rating_4,
+      COUNT(CASE WHEN rating = 5 THEN 1 END)::int as rating_5
+    FROM reviews
+    WHERE product_id = $1
+    GROUP BY product_id
+  `;
+  
+  const result = await db.query(query, [productId]);
+  
+  if (result.rows.length === 0) {
+    return null;
+  }
+  
+  const row = result.rows[0];
+  return new ReviewStatistics({
+    productId: row.product_id,
+    totalCount: row.total_count,
+    averageRating: parseFloat(row.average_rating),
+    ratingDistribution: {
+      1: row.rating_1,
+      2: row.rating_2,
+      3: row.rating_3,
+      4: row.rating_4,
+      5: row.rating_5
+    }
+  });
+}
+```
+
+#### 依存関係
+- PostgreSQLクライアント（`db.query`）
+- カスタムエラークラス（`NotFoundError`, `ConflictError`）
+
+#### エッジケース
+- UNIQUE制約違反 → `ConflictError`スロー
+- 外部キー制約違反 → `NotFoundError`スロー（商品またはユーザーが存在しない）
+- レビューが0件の商品の統計 → `null`を返す（Serviceでデフォルト値生成）
+- 存在しないレビューの削除 → エラーなし（冪等性）
+
+---
+
+### 6.4 ImageUploadService
+
+**ファイル:** `src/services/imageUploadService.ts`
+
+#### 責務
+- S3への画像アップロード
+- 画像URLパス生成
+- アップロードエラーハンドリング
+
+#### インターフェース
+
+```typescript
+export class ImageUploadService {
+  private s3Client: S3Client;
+  private bucketName: string;
+  
+  constructor();
+  async uploadImages(files: Express.Multer.File[]): Promise<string[]>;
+  async deleteImage(imageUrl: string): Promise<void>;
+}
+```
+
+#### 内部ロジック
+
+**constructor:**
+```typescript
+constructor() {
+  this.s3Client = new S3Client({
+    region: process.env.AWS_REGION || 'us-east-1',
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
+    },
+    endpoint: process.env.S3_ENDPOINT // S3互換ストレージ用
+  });
+  
+  this.bucketName = process.env.S3_BUCKET_NAME!;
+  
+  if (!this.bucketName) {
+    throw new Error('S3_BUCKET_NAME environment variable is required');
+  }
+}
+```
+
+**uploadImages:**
+```typescript
+async uploadImages(files: Express.Multer.File[]): Promise<string[]> {
+  if (files.length > 3) {
+    throw new ValidationError([{ field: 'images', message: 'Maximum 3 images allowed' }]);
+  }
+  
+  const uploadPromises = files.map(async (file) => {
+    const fileExtension = path.extname(file.originalname);
+    const fileName = `reviews/${uuidv4()}${fileExtension}`;
+    
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: fileName,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+      ACL: 'public-read' // 公開読み取り許可
+    });
+    
+    try {
+      await this.s3Client.send(command);
+      
+      // S3 URL生成
+      const s3BaseUrl = process.env.S3_BUCKET_URL || `https://${this.bucketName}.s3.amazonaws.com`;
+      return `${s3BaseUrl}/${fileName}`;
+    } catch (error) {
+      throw new ImageUploadError(`Failed to upload image: ${file.originalname}`, error as Error);
+    }
+  });
+  
+  try {
+    const imageUrls = await Promise.all(uploadPromises);
+    return imageUrls;
+  } catch (error) {
+    // 一部アップロード失敗時は全て削除（ロールバック）
+    throw new ImageUploadError('Failed to upload all images', error as Error);
+  }
+}
+```
+
+**deleteImage:**
+```typescript
+async deleteImage(imageUrl: string): Promise<void> {
+  // URLからキーを抽出
+  const s3BaseUrl = process.env.S3_BUCKET_URL || `https://${this.bucketName}.s3.amazonaws.com`;
+  const key = imageUrl.replace(`${s3BaseUrl}/`, '');
+  
+  const command = new DeleteObjectCommand({
+    Bucket: this.bucketName,
+    Key: key
+  });
+  
+  try {
+    await this.s3Client.send(command);
+  } catch (error) {
+    // 削除失敗はログのみ（エラーとして扱わない）
+    console.error('Failed to delete image from S3:', error);
+  }
+}
+```
+
+#### 依存関係
+- `@aws-sdk/client-s3`（AWS SDK v3）
+- `uuid`（ファイル名生成）
+- 環境変数（`AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME`, `S3_ENDPOINT`, `S3_BUCKET_URL`）
+
+#### エッジケース
+- アップロード中のネットワークエラー → `ImageUploadError`スロー
+- 一部画像のアップロード失敗 → 全てロールバック（将来的に実装）
+- 画像削除失敗 → ログ記録のみ（エラーとしない、S3にゴミが残る可能性あり）
+- 3枚以上の画像 → `ValidationError`スロー
+
+---
+
+### 6.5 ProductService（修正）
+
+**ファイル:** `src/services/productService.ts`
+
+#### 修正内容
+
+既存の`findById`メソッドにレビュー統計取得ロジックを追加。
+
+**修正前:**
+```typescript
+async findById(id: string): Promise<Product | null> {
+  return this.productRepository.findById(id);
+}
+```
+
+**修正後:**
+```typescript
+async findById(id: string): Promise<Product | null> {
+  const product = await this.productRepository.findById(id);
+  if (!product) {
+    return null;
+  }
+  
+  // レビュー統計を取得して商品に追加
+  const reviewStats = await this.reviewService.getStatisticsByProductId(id);
+  product.reviewCount = reviewStats.totalCount;
+  product.averageRating = reviewStats.averageRating;
+  
+  return product;
+}
+```
+
+**依存関係追加:**
+- `ReviewService`を`ProductService`のコンストラクタに注入
+
+```typescript
+export class ProductService {
+  constructor(
+    private productRepository: ProductRepository,
+    private reviewService: ReviewService // 追加
+  ) {}
+  
+  // ...
+}
+```
+
+---
+
+### 6.6 Product（モデル修正）
+
+**ファイル:** `src/models/Product.ts`
+
+#### 修正内容
+
+レビュー統計プロパティを追加。
+
+**追加プロパティ:**
+```typescript
+export class Product {
+  id: string;
+  name: string;
+  price: number;
+  // ... 既存プロパティ
+  
+  // 追加
+  reviewCount?: number;
+  averageRating?: number;
+  
+  // ...
+}
+```
+
+**toJSON修正:**
+```typescript
+toJSON(): ProductJSON {
+  return {
+    id: this.id,
+    name: this.name,
+    price: this.price,
+    // ... 既存プロパティ
+    reviewCount: this.reviewCount || 0,
+    averageRating: this.averageRating || 0
+  };
+}
+```
+
+---
+
+### 6.7 ルート定義
+
+**ファイル:** `src/routes/reviewRoutes.ts`
+
+```typescript
+import { Router } from 'express';
+import { ReviewController } from '../controllers/reviewController';
+import { ReviewService } from '../services/reviewService';
+import { ReviewRepository } from '../repositories/reviewRepository';
+import { UserRepository } from '../repositories/userRepository';
+import { ReviewValidator } from '../validators/reviewValidator';
+import { requireAuth, requireAdmin } from '../middleware/auth';
+import rateLimit from 'express-rate-limit';
+
+const router = Router();
+
+// 依存関係注入
+const reviewRepository = new ReviewRepository();
+const userRepository = new UserRepository();
+const reviewService = new ReviewService(reviewRepository, userRepository);
+const reviewController = new ReviewController(reviewService);
+
+// レート制限
+const createReviewLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 1,
+  message: 'Too many reviews created, please try again later'
+});
+
+// ルート定義
+router.post(
+  '/reviews',
+  requireAuth,
+  createReviewLimiter,
+  ReviewValidator.createReview(),
+  (req, res, next) => reviewController.createReview(req, res, next)
+);
+
+router.get(
+  '/products/:productId/reviews',
+  ReviewValidator.getProductReviews(),
+  (req, res, next) => reviewController.getProductReviews(req, res, next)
+);
+
+router.delete(
+  '/reviews/:reviewId',
+  requireAuth,
+  ReviewValidator.deleteReview(),
+  (req, res, next) => reviewController.deleteReview(req, res, next)
+);
+
+router.patch(
+  '/reviews/:reviewId/flag',
+  requireAuth,
+  requireAdmin,
+  ReviewValidator.flagReview(),
+  (req, res, next) => reviewController.flagReview(req, res, next)
+);
+
+export default router;
+```
+
+**ファイル:** `src/routes/index.ts`（修正）
+
+```typescript
+import reviewRoutes from './reviewRoutes';
+
+// 既存ルート
+app.use('/api', productRoutes);
+app.use('/api', userRoutes);
+app.use('/api', orderRoutes);
+
+// 追加
+app.use('/api', reviewRoutes);
+```
+
+---
+
+### 6.8 フロントエンド - ReviewList
+
+**ファイル:** `src/components/reviews/ReviewList.tsx`
+
+#### 責務
+- レビュー一覧表示
+- 平均評価表示
+- ローディング・エラーステート管理
+
+#### インターフェース
+
+```typescript
+interface ReviewListProps {
+  productId: string;
+}
+
+export const ReviewList: React.FC<ReviewListProps>;
+```
+
+#### 内部ロジック
+
+```typescript
+import React from 'react';
+import { useReviews } from '../../hooks/useReviews';
+import { ReviewItem } from './ReviewItem';
+import { StarRating } from './StarRating';
+
+export const ReviewList: React.FC<ReviewListProps> = ({ productId }) => {
+  const { reviews, isLoading, error } = useReviews(productId);
+  
+  if (isLoading) {
+    return <div>Loading reviews...</div>;
+  }
+  
+  if (error) {
+    return <div>Failed to load reviews: {error.message}</div>;
+  }
+  
+  if (reviews.length === 0) {
+    return <div>No reviews yet. Be the first to review!</div>;
+  }
+  
+  // 平均評価計算（フロントエンドで計算）
+  const averageRating = reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length;
+  const roundedAverage = Math.round(averageRating * 10) / 10;
+  
+  return (
+    <div className="review-list">
+      <div className="review-summary">
+        <h2>Customer Reviews</h2>
+        <div className="review-stats">
+          <StarRating rating={roundedAverage} />
+          <span>{roundedAverage.toFixed(1)} out of 5</span>
+          <span>({reviews.length} reviews)</span>
+        </div>
+      </div>
+      
+      <div className="reviews">
+        {reviews.map(review => (
+          <ReviewItem key={review.id} review={review} />
+        ))}
+      </div>
+    </div>
+  );
+};
+```
+
+#### 依存関係
+- `useReviews`カスタムフック
+- `ReviewItem`コンポーネント
+- `StarRating`コンポーネント
+
+#### エッジケース
+- レビューが0件 → "No reviews yet"メッセージ表示
+- API取得失敗 → エラーメッセージ表示
+- ローディング中 → スケルトンUI表示
+
+---
+
+### 6.9 フロントエンド - ReviewItem
+
+**ファイル:** `src/components/reviews/ReviewItem.tsx`
+
+#### 責務
+- 個別レビュー表示
+- HTMLサニタイゼーション
+- 画像表示
+
+#### インターフェース
+
+```typescript
+interface ReviewItemProps {
+  review: Review;
+}
+
+export const ReviewItem: React.FC<ReviewItemProps>;
+```
+
+#### 内部ロジック
+
+```typescript
+import React from 'react';
+import { Review } from '../../types/review';
+import { StarRating } from './StarRating';
+import { sanitizeHTML } from '../../utils/htmlSanitizer';
+
+export const ReviewItem: React.FC<ReviewItemProps> = ({ review }) => {
+  const sanitizedBody = sanitizeHTML(review.body);
+  const formattedDate = new Date(review.createdAt).toLocaleDateString();
+  
+  return (
+    <div className="review-item" data-review-id={review.id}>
+      <div className="review-header">
+        <span className="reviewer-name">{review.userName || 'Anonymous'}</span>
+        <StarRating rating={review.rating} />
+        <span className="review-date">{formattedDate}</span>
+      </div>
+      
+      <h3 className="review-title">{review.title}</h3>
+      
+      <div 
+        className="review-body"
+        dangerouslySetInnerHTML={{ __html: sanitizedBody }}
+      />
+      
+      {review.images.length > 0 && (
+        <div className="review-images">
+          {review.images.map((imageUrl, index) => (
+            <img
+              key={index}
+              src={imageUrl}
+              alt={`Review image ${index + 1}`}
+              className="review-image"
+              loading="lazy"
+            />
+          ))}
+        </div>
+      )}
+      
+      {review.flagged && (
+        <div className="review-flagged-notice">
+          This review has been flagged by moderators
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+#### 依存関係
+- `sanitizeHTML`ユーティリティ
+- `StarRating`コンポーネント
+- `Review`型定義
+
+#### エッジケース
+- ユーザー名なし → "Anonymous"表示
+- 画像なし → 画像セクション非表示
+- フラグ付きレビュー → 警告メッセージ表示
+- 長いHTML本文 → CSSで高さ制限 + "Read more"展開機能（将来拡張）
+
+---
+
+### 6.10 フロントエンド - ReviewForm
+
+**ファイル:** `src/components/reviews/ReviewForm.tsx`
+
+#### 責務
+- レビュー投稿フォーム
+- 入力バリデーション
+- 画像アップロード（S3へのアップロードはバックエンド経由）
+- API送信
+
+#### インターフェース
+
+```typescript
+interface ReviewFormProps {
+  productId: string;
+  onSuccess: () => void;
+}
+
+export const ReviewForm: React.FC<ReviewFormProps>;
+```
+
+#### 内部ロジック
+
+```typescript
+import React, { useState } from 'react';
+import { useReviewSubmit } from '../../hooks/useReviewSubmit';
+import { StarRatingInput } from './StarRatingInput';
+import { RichTextEditor } from './RichTextEditor';
+import { ImageUpload } from './ImageUpload';
+import { compressImages } from '../../utils/imageCompression';
+
+export const ReviewForm: React.FC<ReviewFormProps> = ({ productId, onSuccess }) => {
+  const [rating, setRating] = useState<number>(0);
+  const [title, setTitle] = useState<string>('');
+  const [body, setBody] = useState<string>('');
+  const [images, setImages] = useState<File[]>([]);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  
+  const { submitReview, isSubmitting, error: submitError } = useReviewSubmit();
+  
+  const validateForm = (): boolean => {
+    const newErrors: Record<string, string> = {};
+    
+    if (rating === 0) {
+      newErrors.rating = 'Please select a rating';
+    }
+    if (title.trim().length === 0 || title.length > 200) {
+      newErrors.title = 'Title must be between 1 and 200 characters';
+    }
+    if (body.trim().length === 0 || body.length > 5000) {
+      newErrors.body = 'Review must be between 1 and 5000 characters';
+    }
+    if (images.length > 3) {
+      newErrors.images = 'Maximum 3 images allowed';
+    }
+    
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+  
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!validateForm()) {
+      return;
+    }
+    
+    try {
+      // 画像圧縮
+      const compressedImages = await compressImages(images);
+      
+      // レビュー送信（画像アップロードも含む）
+      await submitReview({
+        productId,
+        rating,
+        title,
+        body,
+        images: compressedImages
+      });
+      
+      // 成功時のコールバック
+      onSuccess();
+      
+      // フォームリセット
+      setRating(0);
+      setTitle('');
+      setBody('');
+      setImages([]);
+      setErrors({});
+    } catch (error) {
+      // エラーはuseReviewSubmitフックで処理
+    }
+  };
+  
+  return (
+    <form className="review-form" onSubmit={handleSubmit}>
+      <h3>Write a Review</h3>
+      
+      {submitError && (
+        <div className="error-message">{submitError}</div>
+      )}
+      
+      <div className="form-group">
+        <label>Rating *</label>
+        <StarRatingInput value={rating} onChange={setRating} />
+        {errors.rating && <span className="error">{errors.rating}</span>}
+      </div>
+      
+      <div className="form-group">
+        <label htmlFor="review-title">Title *</label>
+        <input
+          id="review-title"
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          maxLength={200}
+          placeholder="Summarize your review"
+        />
+        <span className="char-count">{title.length}/200</span>
+        {errors.title && <span className="error">{errors.title}</span>}
+      </div>
+      
+      <div className="form-group">
+        <label htmlFor="review-body">Review *</label>
+        <RichTextEditor
+          value={body}
+          onChange={setBody}
+          maxLength={5000}
+        />
+        <span className="char-count">{body.length}/5000</span>
+        {errors.body && <span className="error">{errors.body}</span>}
+      </div>
+      
+      <div className="form-group">
+        <label>Images (optional, max 3)</label>
+        <ImageUpload
+          images={images}
+          onChange={setImages}
+          maxImages={3}
+        />
+        {errors.images && <span className="error">{errors.images}</span>}
+      </div>
+      
+      <button type="submit" disabled={isSubmitting}>
+        {isSubmitting ? 'Submitting...' : 'Submit Review'}
+      </button>
+    </form>
+  );
+};
+```
+
+#### 依存関係
+- `useReviewSubmit`カスタムフック
+- `StarRatingInput`, `RichTextEditor`, `ImageUpload`コンポーネント
+- `compressImages`ユーティリティ
+
+#### エッジケース
+- 未入力項目 → バリデーションエラー表示
+- 画像圧縮失敗 → エラーメッセージ表示
+- API送信失敗 → エラーメッセージ表示
+- 送信中の二重送信 → ボタン無効化
+
+---
+
+### 6.11 フロントエンド - カスタムフック
+
+#### useReviews
+
+**ファイル:** `src/hooks/useReviews.ts`
+
+```typescript
+import { useState, useEffect } from 'react';
+import { Review } from '../types/review';
+import { reviewApi } from '../api/reviewApi';
+
+export function useReviews(productId: string) {
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<Error | null>(null);
+  
+  useEffect(() => {
+    const fetchReviews = async () => {
+      setIsLoading(true);
+      setError(null);
+      
+      try {
+        const data = await reviewApi.fetchReviews(productId);
+        setReviews(data);
+      } catch (err) {
+        setError(err as Error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    fetchReviews();
+  }, [productId]);
+  
+  return { reviews, isLoading, error };
+}
+```
+
+#### useReviewSubmit
+
+**ファイル:** `src/hooks/useReviewSubmit.ts`
+
+```typescript
+import { useState } from 'react';
+import { CreateReviewRequest } from '../types/review';
+import { reviewApi } from '../api/reviewApi';
+
+export function useReviewSubmit() {
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  const submitReview = async (data: CreateReviewRequest): Promise<void> => {
+    setIsSubmitting(true);
+    setError(null);
+    
+    try {
+      // 画像を先にアップロード（S3へ）
+      const imageUrls = await reviewApi.uploadImages(data.images);
+      
+      // レビューを投稿
+      await reviewApi.createReview({
+        productId: data.productId,
+        rating: data.rating,
+        title: data.title,
+        body: data.body,
+        imageUrls
+      });
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.error?.message || 'Failed to submit review';
+      setError(errorMessage);
+      throw err;
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+  
+  return { submitReview, isSubmitting, error };
+}
+```
+
+---
+
+### 6.12 フロントエンド - API呼び出し
+
+**ファイル:** `src/api/reviewApi.ts`
+
+```typescript
+import axios from 'axios';
+import { Review, CreateReviewPayload } from '../types/review';
+
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '/api';
+
+export const reviewApi = {
+  async fetchReviews(productId: string): Promise<Review[]> {
+    const response = await axios.get(`${API_BASE_URL}/products/${productId}/reviews`);
+    return response.data.data;
+  },
+  
+  async createReview(payload: CreateReviewPayload): Promise<Review> {
+    const response = await axios.post(`${API_BASE_URL}/reviews`, payload);
+    return response.data.data;
+  },
+  
+  async uploadImages(files: File[]): Promise<string[]> {
+    const formData = new FormData();
+    files.forEach((file, index) => {
+      formData.append(`images`, file);
+    });
+    
+    const response = await axios.post(`${API_BASE_URL}/reviews/upload-images`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    
+    return response.data.imageUrls;
+  },
+  
+  async deleteReview(reviewId: string): Promise<void> {
+    await axios.delete(`${API_BASE_URL}/reviews/${reviewId}`);
+  },
+  
+  async flagReview(reviewId: string, flagged: boolean): Promise<Review> {
+    const response = await axios.patch(`${API_BASE_URL}/reviews/${reviewId}/flag`, { flagged });
+    return response.data.data;
+  }
+};
+```
+
+**注意:** 画像アップロード専用エンドポイント（`POST /api/reviews/upload-images`）が必要。以下のControllerメソッドを追加。
+
+**追加実装（ReviewController）:**
+
+```typescript
+async uploadImages(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (!req.files || !Array.isArray(req.files)) {
+      throw new ValidationError([{ field: 'images', message: 'No images provided' }]);
+    }
+    
+    const imageUrls = await this.imageUploadService.uploadImages(req.files as Express.Multer.File[]);
+    
+    res.json({ imageUrls });
+  } catch (error) {
+    next(error);
+  }
+}
+```
+
+**ルート追加（reviewRoutes.ts）:**
+
+```typescript
+import multer from 'multer';
+import { imageUploadMiddleware } from '../middleware/imageUpload';
+
+router.post(
+  '/reviews/upload-images',
+  requireAuth,
+  imageUploadMiddleware.array('images', 3),
+  (req, res, next) => reviewController.uploadImages(req, res, next)
+);
+```
+
+---
+
+### 6.13 画像アップロードミドルウェア
+
+**ファイル:** `src/middleware/imageUpload.ts`
+
+```typescript
+import multer from 'multer';
+import { ImageUploadError } from '../errors/ImageUploadError';
+
+// メモリストレージ（S3に直接アップロードするためバッファで保持）
+const storage = multer.memoryStorage();
+
+// ファイルフィルター
+const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
+  
+  if (allowedMimeTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new ImageUploadError(`Invalid file type: ${file.mimetype}. Only JPEG, PNG, and WebP are allowed.`));
+  }
+};
+
+export const imageUploadMiddleware = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB
+    files: 3
+  }
+});
+```
+
+---
+
+## 7. テスト戦略
+
+### 7.1 テスト方針
+
+#### 7.1.1 テストレベル
+
+**単体テスト（Unit Tests）:**
+- 対象: Service層、Repository層、ユーティリティ関数
+- ツール: Jest
+- カバレッジ目標: 80%以上
+
+**統合テスト（Integration Tests）:**
+- 対象: API エンドポイント（Controller → Service → Repository → DB）
+- ツール: Jest + supertest
+- テストDB: PostgreSQL テストコンテナ（Docker）
+
+**E2Eテスト（End-to-End Tests）:**
+- 対象: フロントエンドからバックエンドまでの全フロー
+- ツール: Playwright または Cypress
+- 実装範囲: 次フェーズ（本フェーズでは統合テストまで）
+
+#### 7.1.2 モック方針
+
+- **Repository層の単体テスト:** DBクライアントをモック
+- **Service層の単体テスト:** Repositoryをモック
+- **Controller層の統合テスト:** DBは実テストDBを使用、外部サービス（S3）のみモック
+- **画像アップロード:** S3Clientをモック
+
+### 7.2 テストケース一覧
+
+#### 7.2.1 ReviewService テスト
+
+**ファイル:** `src/__tests__/reviewService.test.ts`
+
+| No | テストケース | 期待結果 |
+|----|------------|---------|
+| 1  | `createReview`: 正常なレビュー作成 | レビューが作成され、Reviewインスタンスが返る |
+| 2  | `createReview`: 重複レビュー（同一ユーザー・商品） | ConflictErrorがスローされる |
+| 3  | `createReview`: 存在しない商品へのレビュー | NotFoundErrorがスローされる |
+| 4  | `getReviewsByProductId`: レビューが存在する商品 | レビュー配列が返る（新着順） |
+| 5  | `getReviewsByProductId`: レビューが0件の商品 | 空配列が返る |
+| 6  | `getReviewById`: 存在するレビュー | Reviewインスタンスが返る |
+| 7  | `getReviewById`: 存在しないレビュー | nullが返る |
+| 8  | `deleteReview`: 存在するレビュー削除 | 正常に削除される |
+| 9  | `flagReview`: フラグ設定 | flagged=trueでレビューが更新される |
+| 10 | `getStatisticsByProductId`: レビューが存在する商品 | 正しい統計情報が返る |
+| 11 | `getStatisticsByProductId`: レビューが0件の商品 | デフォルト統計情報が返る |
+
+#### 7.2.2 ReviewRepository テスト（統合テスト）
+
+**ファイル:** `src/__tests__/reviewRepository.test.ts`
+
+| No | テストケース | 期待結果 |
+|----|------------|---------|
+| 1  | `create`: 正常なレビュー作成 | DBにレビューが保存される |
+| 2  | `create`: UNIQUE制約違反 | PostgreSQLエラー23505、ConflictErrorスロー |
+| 3  | `create`: 外部キー制約違反（商品） | PostgreSQLエラー23503、NotFoundErrorスロー |
+| 4  | `findByProductId`: 複数レビュー取得 | created_at降順でレビュー配列が返る |
+| 5  | `findByProductId`: ユーザー情報結合 | user_nameが含まれる |
+| 6  | `findById`: 正常取得 | 指定IDのレビューが返る |
+| 7  | `delete`: 正常削除 | レビューが物理削除される |
+| 8  | `updateFlag`: フラグ更新 | flaggedがtrueに更新される |
+| 9  | `getStatisticsByProductId`: 集計計算 | 平均評価、件数、分布が正しい |
+
+#### 7.2.3 ReviewController テスト（統合テスト）
+
+**ファイル:** `src/__tests__/review.test.ts`
+
+| No | テストケース | 期待結果 | HTTPステータス |
+|----|------------|---------|--------------|
+| 1  | `POST /api/reviews`: 正常なレビュー投稿 | レビューが作成され、201レスポンス | 201 |
+| 2  | `POST /api/reviews`: バリデーションエラー（rating不正） | ValidationError、400レスポンス | 400 |
+| 3  | `POST /api/reviews`: 未認証ユーザー | UnauthorizedError、401レスポンス | 401 |
+| 4  | `POST /api/reviews`: 重複レビュー | ConflictError、409レスポンス | 409 |
+| 5  | `POST /api/reviews`: レート制限超過 | 429レスポンス | 429 |
+| 6  | `GET /api/products/:productId/reviews`: 正常取得 | レビュー配列、200レスポンス | 200 |
+| 7  | `GET /api/products/:productId/reviews`: 存在しない商品 | 空配列、200レスポンス | 200 |
+| 8  | `DELETE /api/reviews/:reviewId`: 投稿者本人が削除 | 204レスポンス | 204 |
+| 9  | `DELETE /api/reviews/:reviewId`: 管理者が削除 | 204レスポンス | 204 |
+| 10 | `DELETE /api/reviews/:reviewId`: 他ユーザーが削除 | ForbiddenError、403レスポンス | 403 |
+| 11 | `DELETE /api/reviews/:reviewId`: 存在しないレビュー | NotFoundError、404レスポンス | 404 |
+| 12 | `PATCH /api/reviews/:reviewId/flag`: 管理者がフラグ設定 | flagged=trueで更新、200レスポンス | 200 |
+| 13 | `PATCH /api/reviews/:reviewId/flag`: 非管理者がフラグ設定 | ForbiddenError、403レスポンス | 403 |
+
+#### 7.2.4 ImageUploadService テスト
+
+**ファイル:** `src/__tests__/imageUploadService.test.ts`
+
+| No | テストケース | 期待結果 |
+|----|------------|---------|
+| 1  | `uploadImages`: 1枚の画像アップロード | S3にアップロードされ、URL配列が返る |
+| 2  | `uploadImages`: 3枚の画像アップロード | 3つのURLが返る |
+| 3  | `uploadImages`: 4枚の画像アップロード | ValidationErrorがスローされる |
+| 4  | `uploadImages`: アップロード失敗 | ImageUploadErrorがスローされる |
+| 5  | `deleteImage`: 正常削除 | S3から削除される（エラーなし） |
+| 6  | `deleteImage`: 削除失敗 | エラーログのみ（例外スローしない） |
+
+#### 7.2.5 フロントエンドテスト
+
+**ファイル:** `src/components/reviews/__tests__/ReviewList.test.tsx`
+
+| No | テストケース | 期待結果 |
+|----|------------|---------|
+| 1  | レビューが存在する場合 | レビュー一覧と平均評価が表示される |
+| 2  | レビューが0件の場合 | "No reviews yet"メッセージが表示される |
+| 3  | API取得失敗 | エラーメッセージが表示される |
+| 4  | ローディング中 | "Loading reviews..."が表示される |
+
+**ファイル:** `src/components/reviews/__tests__/ReviewForm.test.tsx`
+
+| No | テストケース | 期待結果 |
+|----|------------|---------|
+| 1  | 正常なレビュー投稿 | API呼び出し成功、フォームリセット |
+| 2  | バリデーションエラー（rating未選択） | エラーメッセージ表示、送信されない |
+| 3  | バリデーションエラー（title空） | エラーメッセージ表示 |
+| 4  | 画像4枚選択 | エラーメッセージ表示 |
+| 5  | 送信中の二重送信 | ボタンが無効化される |
+
+### 7.3 テストデータ
+
+#### 7.3.1 テストユーザー
+
+```typescript
+const testUsers = [
+  {
+    id: '11111111-1111-1111-1111-111111111111',
+    name: 'Test User 1',
+    email: 'user1@example.com',
+    role: 'user'
+  },
+  {
+    id: '22222222-2222-2222-2222-222222222222',
+    name: 'Admin User',
+    email: 'admin@example.com',
+    role: 'admin'
+  }
+];
+```
+
+#### 7.3.2 テスト商品
+
+```typescript
+const testProducts = [
+  {
+    id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    name: 'Test Product 1',
+    price: 1000
+  },
+  {
+    id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    name: 'Test Product 2',
+    price: 2000
+  }
+];
+```
+
+#### 7.3.3 テストレビュー
+
+```typescript
+const testReviews = [
+  {
+    productId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    userId: '11111111-1111-1111-1111-111111111111',
+    rating: 5,
+    title: 'Great product!',
+    body: '<p>This is a <strong>great</strong> product.</p>',
+    images: ['https://s3.example.com/reviews/image1.jpg']
+  },
+  {
+    productId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    userId: '22222222-2222-2222-2222-222222222222',
+    rating: 4,
+    title: 'Good value',
+    body: '<p>Good value for money.</p>',
+    images: []
+  }
+];
+```
+
+#### 7.3.4 テスト画像
+
+```typescript
+const testImageFile = Buffer.from('fake-image-data');
+const testImageFiles: Express.Multer.File[] = [
+  {
+    fieldname: 'images',
+    originalname: 'test1.jpg',
+    encoding: '7bit',
+    mimetype: 'image/jpeg',
+    buffer: testImageFile,
+    size: 1024
+  }
+];
+```
+
+---
+
+## 8. 依存関係管理と実装順序
+
+### 8.1 外部ライブラリ
+
+#### 8.1.1 バックエンド依存関係
+
+**package.json追加:**
+
+```json
+{
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.470.0",
+    "express-validator": "^7.0.1",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.1",
+    "express-rate-limit": "^7.1.5"
+  },
+  "devDependencies": {
+    "@types/multer": "^1.4.11",
+    "@types/uuid": "^9.0.7"
+  }
+}
+```
+
+**インストールコマンド:**
+```bash
+npm install @aws-sdk/client-s3 express-validator multer uuid express-rate-limit
+npm install --save-dev @types/multer @types/uuid
+```
+
+#### 8.1.2 フロントエンド依存関係
+
+**package.json追加:**
+
+```json
+{
+  "dependencies": {
+    "dompurify": "^3.0.8",
+    "browser-image-compression": "^2.0.2",
+    "axios": "^1.6.5"
+  },
+  "devDependencies": {
+    "@types/dompurify": "^3.0.5"
+  }
+}
+```
+
+**インストールコマンド:**
+```bash
+npm install dompurify browser-image-compression axios
+npm install --save-dev @types/dompurify
+```
+
+### 8.2 実装順序
+
+#### Phase 1: 基盤実装（1-2日）
+
+1. **DBマイグレーション実行**
+   - `001_create_reviews_table.sql`実行
+   - テーブル・インデックス・トリガー作成確認
+
+2. **モデル・型定義**
+   - `src/models/Review.ts`
+   - `src/models/ReviewStatistics.ts`
+   - `src/types/review.ts`（フロントエンド）
+
+3. **エラークラス**
+   - `src/errors/ValidationError.ts`
+   - `src/errors/ImageUploadError.ts`
+
+4. **バリデーター**
+   - `src/validators/reviewValidator.ts`
+
+#### Phase 2: バックエンドコア実装（2-3日）
+
+5. **Repository層**
+   - `src/repositories/reviewRepository.ts`
+   - 単体テスト作成（DBモック使用）
+
+6. **Service層**
+   - `src/services/reviewService.ts`
+   - 単体テスト作成（Repositoryモック使用）
+
+7. **画像アップロードサービス**
+   - `src/services/imageUploadService.ts`
+   - 単体テスト作成（S3Clientモック使用）
+
+8. **ミドルウェア**
+   - `src/middleware/imageUpload.ts`
+   - `src/middleware/auth.ts`の修正（`requireAdmin`追加）
+
+#### Phase 3: バックエンドAPI実装（2-3日）
+
+9. **Controller層**
+   - `src/controllers/reviewController.ts`
+   - 画像アップロードエンドポイント追加
+
+10. **ルート定義**
+    - `src/routes/reviewRoutes.ts`
+    - `src/routes/index.ts`修正
+
+11. **統合テスト**
+    - `src/__tests__/review.test.ts`
+    - テストDB使用、全APIエンドポイントのテスト
+
+#### Phase 4: 既存機能拡張（1日）
+
+12. **Product関連の修正**
+    - `src/models/Product.ts`修正
+    - `src/services/productService.ts`修正
+    - `src/controllers/productController.ts`修正
+    - 既存テストの修正
+
+#### Phase 5: フロントエンド基盤（1-2日）
+
+13. **ユーティリティ・API層**
+    - `src/utils/htmlSanitizer.ts`
+    - `src/utils/imageCompression.ts`
+    - `src/api/reviewApi.ts`
+
+14. **カスタムフック**
+    - `src/hooks/useReviews.ts`
+    - `src/hooks/useReviewSubmit.ts`
+
+#### Phase 6: フロントエンドUI実装（3-4日）
+
+15. **共通コンポーネント**
+    - `src/components/reviews/StarRating.tsx`
+    - `src/components/reviews/StarRatingInput.tsx`
+    - `src/components/reviews/RichTextEditor.tsx`
+    - `src/components/reviews/ImageUpload.tsx`
+
+16. **メインコンポーネント**
+    - `src/components/reviews/ReviewItem.tsx`
+    - `src/components/reviews/ReviewList.tsx`
+    - `src/components/reviews/ReviewForm.tsx`
+
+17. **ページ統合**
+    - `src/pages/ProductDetail.tsx`修正
+    - 商品詳細ページにレビューセクション追加
+
+18. **フロントエンドテスト**
+    - Jestでコンポーネントテスト作成
+
+#### Phase 7: 統合・検証（2-3日）
+
+19. **エンドツーエンドテスト**
+    - 全フローの動作確認
+    - バグ修正
+
+20. **パフォーマンステスト**
+    - レビュー1000件の商品での表示速度確認
+    - 必要に応じてページネーション追加検討
+
+21. **セキュリティ監査**
+    - XSS脆弱性チェック
+    - SQLインジェクションチェック
+    - CSRF対策確認
+
+22. **ドキュメント整備**
+    - API仕様書作成（OpenAPI形式）
+    - 環境変数設定手順書
+
+#### 合計見積もり: 12-18日
+
+**依存関係グラフ:**
+```
+Phase 1 (基盤) 
+   ↓
+Phase 2 (バックエンドコア) 
+   ↓
+Phase 3 (バックエンドAPI) ← Phase 5 (フロントエンド基盤) 並行可能
+   ↓                              ↓
+Phase 4 (既存機能拡張)       Phase 6 (フロントエンドUI)
+   ↓                              ↓
+   └──────────→ Phase 7 (統合・検証) ←─────────┘
+```
+
+---
+
+## 補足事項
+
+### 環境変数設定
+
+**バックエンド（.env）:**
+```
+# S3設定
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+S3_BUCKET_NAME=shopnow-review-images
+S3_ENDPOINT=https://s3.amazonaws.com  # S3互換ストレージの場合は変更
+S3_BUCKET_URL=https://shopnow-review-images.s3.amazonaws.com
+
+# PostgreSQL
+DATABASE_URL=postgresql://user:password@localhost:5432/shopnow
+
+# JWT認証（既存）
+JWT_SECRET=your-jwt-secret
+```
+
+**フロントエンド（.env）:**
+```
+REACT_APP_API_BASE_URL=http://localhost:3000/api
+```
+
+### 将来的な拡張検討事項
+
+1. **ページネーション:** レビュー一覧が多い場合の対応
+2. **レビューのソート:** 評価順、役立った順
+3. **レビューへの返信:** 商品提供者からの返信機能
+4. **画像の自動モデレーション:** AWS Rekognitionなど
+5. **メール通知:** 商品提供者へのレビュー投稿通知
+6. **キャッシュ:** Redisでレビュー統計をキャッシュ
+7. **購入確認:** 購入済み商品のみレビュー可能にする
+
+---
+
+以上、ShopNow商品レビュー機能の詳細実装計画です。この計画に従って実装することで、一貫性のある高品質な機能を構築できます。

@@ -1,0 +1,1769 @@
+# 商品レビュー機能追加 - 詳細開発計画
+
+## 1. 概要
+
+### 1.1 目的
+
+ECサイト「ShopNow」に商品レビュー機能を追加し、以下を実現する。
+
+- ログインユーザーが購入した商品に対して星評価（1-5）、タイトル、HTMLリッチテキスト本文、画像（最大3枚）を含むレビューを投稿できる
+- 商品詳細ページでレビュー一覧と平均評価を表示する
+- 管理者が不適切なレビューを削除・フラグ設定できる
+
+### 1.2 スコープ
+
+**含まれる範囲**
+
+- レビュー投稿APIの実装（バリデーション、画像アップロード、DB保存）
+- レビュー一覧取得APIの実装（平均評価計算を含む）
+- レビュー削除・フラグ設定APIの実装（管理者権限チェック）
+- フロントエンドのレビュー投稿フォームコンポーネント
+- フロントエンドのレビュー一覧表示コンポーネント
+- S3互換ストレージへの画像アップロード機能
+- レビュー関連のユニット・統合テスト
+
+**明示的に含まれない範囲**
+
+- レビューの編集機能
+- レビューへの返信機能
+- レビューの並び替え・フィルタリング機能（新着順のみ実装）
+- レビュー投稿時のメール通知機能（Review.sendNotification()は実装しない）
+- レビュー集計レポート機能（Review.generateReport()は実装しない）
+- 購入履歴との連携（購入確認は行わず、ログインユーザーなら誰でも投稿可能）
+
+### 1.3 前提条件
+
+**技術スタック**
+
+- バックエンド: Node.js + Express + TypeScript
+- データベース: PostgreSQL（既存DBに追加）
+- ORMレス: 生SQLクエリを使用（既存パターンに準拠）
+- 認証: JWT認証（middleware/auth.ts を使用）
+- テスト: Jest + supertest
+- フロントエンド: React + TypeScript
+
+**既存機能**
+
+- ユーザー認証機能（JWT）が実装済み
+- 商品管理機能が実装済み
+- エラーハンドリングミドルウェアが実装済み
+- Repository-Service-Controllerの3層アーキテクチャが確立済み
+
+**環境**
+
+- PostgreSQL 13以上（UUID生成関数 gen_random_uuid() を使用）
+- S3互換ストレージのエンドポイント、認証情報が環境変数で提供される
+
+### 1.4 ユーザー選定事項
+
+| 項目 | 選定内容 | 理由 |
+|---|---|---|
+| バックエンドフレームワーク | Node.js + Express | 既存スタックを踏襲し、学習コストを抑える |
+| データベース | PostgreSQL | 既存DBに追加。トランザクション、JSONB型、配列型のサポートが豊富 |
+| 画像ストレージ | S3互換ストレージ | スケーラビリティ、CDN連携、既存インフラとの統合が容易 |
+| フロントエンド | React + TypeScript | 既存スタックを踏襲 |
+| 画像アップロードライブラリ | aws-sdk v3 (@aws-sdk/client-s3) | S3互換ストレージの標準ライブラリ、型安全性が高い |
+| 画像リサイズ | クライアント側で実施 | サーバー負荷を軽減。ライブラリはbrowser-image-compressionを使用 |
+
+## 2. ディレクトリ/ファイル設計
+
+### 2.1 新規作成ファイル
+
+| ファイルパス | 目的 | 主要な型/関数 |
+|---|---|---|
+| `/home/r-toyama/work/ai-experimental/src/models/Review.ts` | レビューのドメインモデル定義 | `Review`クラス、`CreateReviewDto`、`UpdateReviewDto` |
+| `/home/r-toyama/work/ai-experimental/src/repositories/reviewRepository.ts` | レビューのDB操作 | `ReviewRepository`クラス（create, findByProductId, findById, delete, updateFlag） |
+| `/home/r-toyama/work/ai-experimental/src/services/reviewService.ts` | レビューのビジネスロジック | `ReviewService`クラス（createReview, getProductReviews, deleteReview, flagReview, validateReview） |
+| `/home/r-toyama/work/ai-experimental/src/controllers/reviewController.ts` | レビューAPIエンドポイント | `ReviewController`クラス（createReview, getProductReviews, deleteReview, flagReview） |
+| `/home/r-toyama/work/ai-experimental/src/services/imageUploadService.ts` | S3画像アップロード処理 | `ImageUploadService`クラス（uploadImages, deleteImages） |
+| `/home/r-toyama/work/ai-experimental/src/utils/imageValidator.ts` | 画像バリデーション | `validateImageFiles`関数、`validateImageUrls`関数 |
+| `/home/r-toyama/work/ai-experimental/src/__tests__/review.test.ts` | レビュー機能の統合テスト | テストケース群 |
+| `/home/r-toyama/work/ai-experimental/src/__tests__/unit/reviewService.test.ts` | ReviewServiceのユニットテスト | テストケース群 |
+| `/home/r-toyama/work/ai-experimental/src/__tests__/unit/imageUploadService.test.ts` | ImageUploadServiceのユニットテスト | テストケース群 |
+| `/home/r-toyama/work/ai-experimental/migrations/001_create_reviews_table.sql` | reviewsテーブル作成マイグレーション | SQLスクリプト |
+
+### 2.2 修正ファイル
+
+| ファイルパス | 修正内容 | 影響範囲 |
+|---|---|---|
+| `/home/r-toyama/work/ai-experimental/src/routes/index.ts` | レビュー関連ルートの追加 | ルーティング全体に新規エンドポイント4つ追加 |
+| `/home/r-toyama/work/ai-experimental/src/middleware/auth.ts` | 管理者権限チェックミドルウェア追加 | 既存の認証ロジックに影響なし。新規関数`requireAdmin`を追加 |
+| `/home/r-toyama/work/ai-experimental/package.json` | 依存ライブラリ追加 | @aws-sdk/client-s3、multiparty、@types/multipartyを追加 |
+
+### 2.3 ディレクトリ構成（変更後）
+
+```
+/home/r-toyama/work/ai-experimental/
+├── src/
+│   ├── controllers/
+│   │   ├── productController.ts
+│   │   ├── userController.ts
+│   │   ├── orderController.ts
+│   │   └── reviewController.ts          # 新規
+│   ├── services/
+│   │   ├── productService.ts
+│   │   ├── userService.ts
+│   │   ├── orderService.ts
+│   │   ├── reviewService.ts             # 新規
+│   │   └── imageUploadService.ts        # 新規
+│   ├── repositories/
+│   │   ├── productRepository.ts
+│   │   ├── userRepository.ts
+│   │   ├── orderRepository.ts
+│   │   └── reviewRepository.ts          # 新規
+│   ├── models/
+│   │   ├── Product.ts
+│   │   ├── User.ts
+│   │   ├── Order.ts
+│   │   └── Review.ts                    # 新規
+│   ├── middleware/
+│   │   ├── auth.ts                      # 修正（requireAdmin追加）
+│   │   └── errorHandler.ts
+│   ├── routes/
+│   │   └── index.ts                     # 修正（レビュールート追加）
+│   ├── utils/
+│   │   ├── validator.ts
+│   │   └── imageValidator.ts            # 新規
+│   ├── __tests__/
+│   │   ├── product.test.ts
+│   │   ├── user.test.ts
+│   │   ├── order.test.ts
+│   │   ├── review.test.ts               # 新規
+│   │   └── unit/
+│   │       ├── reviewService.test.ts    # 新規
+│   │       └── imageUploadService.test.ts # 新規
+│   └── app.ts
+├── migrations/
+│   └── 001_create_reviews_table.sql     # 新規
+└── package.json                         # 修正
+```
+
+## 3. アーキテクチャ設計
+
+### 3.1 全体構成
+
+```
+[クライアント（React）]
+       ↓
+[Expressルーター]
+       ↓
+[認証ミドルウェア（auth.ts）]
+       ↓
+[ReviewController] ←→ [ImageUploadService（S3）]
+       ↓
+[ReviewService] ←→ [Validator]
+       ↓
+[ReviewRepository]
+       ↓
+[PostgreSQL]
+```
+
+**データフロー**
+
+1. **レビュー投稿**
+   - クライアント → multipart/form-data（rating, title, body, images）
+   - ReviewController → ImageUploadService（画像をS3にアップロード）
+   - ReviewController → ReviewService（バリデーション + ビジネスロジック）
+   - ReviewService → ReviewRepository（DB保存）
+   - ReviewRepository → PostgreSQL（INSERT）
+   - レスポンス: 作成されたReviewオブジェクト
+
+2. **レビュー一覧取得**
+   - クライアント → GET /api/products/:id/reviews
+   - ReviewController → ReviewService
+   - ReviewService → ReviewRepository（SELECT + 平均評価計算）
+   - レスポンス: { data: Review[], averageRating: number, reviewCount: number }
+
+3. **レビュー削除/フラグ設定**
+   - クライアント → DELETE/PATCH（管理者のみ）
+   - 認証ミドルウェア（requireAdmin）→ ReviewController
+   - ReviewController → ReviewService → ReviewRepository
+   - 削除時にImageUploadServiceでS3の画像も削除
+
+### 3.2 主要コンポーネント
+
+#### ReviewController
+
+**責務**
+- HTTPリクエストの受け取りとレスポンスの返却
+- リクエストパラメータの抽出
+- エラーハンドリングのnext(error)への委譲
+
+**インターフェース**
+```typescript
+class ReviewController {
+  constructor(
+    private reviewService: ReviewService,
+    private imageUploadService: ImageUploadService
+  )
+
+  async createReview(req: Request, res: Response, next: NextFunction): Promise<void>
+  async getProductReviews(req: Request, res: Response, next: NextFunction): Promise<void>
+  async deleteReview(req: Request, res: Response, next: NextFunction): Promise<void>
+  async flagReview(req: Request, res: Response, next: NextFunction): Promise<void>
+}
+```
+
+**依存関係**
+- ReviewService
+- ImageUploadService
+
+#### ReviewService
+
+**責務**
+- レビュー投稿のビジネスルール検証
+- レビューデータのバリデーション
+- 平均評価の計算
+- トランザクション制御（必要に応じて）
+
+**インターフェース**
+```typescript
+class ReviewService {
+  constructor(private reviewRepository: ReviewRepository)
+
+  async createReview(data: CreateReviewDto): Promise<Review>
+  async getProductReviews(productId: string): Promise<{ reviews: Review[], averageRating: number, reviewCount: number }>
+  async deleteReview(reviewId: string): Promise<void>
+  async flagReview(reviewId: string, flagged: boolean): Promise<Review>
+  private validateReview(data: CreateReviewDto): void
+}
+```
+
+**依存関係**
+- ReviewRepository
+
+#### ReviewRepository
+
+**責務**
+- PostgreSQLへの生SQLクエリ実行
+- データベース操作の抽象化
+
+**インターフェース**
+```typescript
+class ReviewRepository {
+  async create(data: CreateReviewDto): Promise<Review>
+  async findByProductId(productId: string): Promise<Review[]>
+  async findById(reviewId: string): Promise<Review | null>
+  async delete(reviewId: string): Promise<void>
+  async updateFlag(reviewId: string, flagged: boolean): Promise<Review>
+}
+```
+
+**依存関係**
+- PostgreSQL接続（dbモジュール）
+
+#### ImageUploadService
+
+**責務**
+- S3互換ストレージへの画像アップロード
+- 画像の削除
+- 画像URLの生成
+
+**インターフェース**
+```typescript
+class ImageUploadService {
+  constructor(private s3Client: S3Client, private bucketName: string)
+
+  async uploadImages(files: Express.Multer.File[]): Promise<string[]>
+  async deleteImages(imageUrls: string[]): Promise<void>
+  private generateFileName(originalName: string): string
+}
+```
+
+**依存関係**
+- @aws-sdk/client-s3
+
+### 3.3 データモデル
+
+#### Review（モデルクラス）
+
+```typescript
+export class Review {
+  id: string;
+  productId: string;
+  userId: string;
+  rating: number;          // 1-5
+  title: string;           // 最大200文字
+  body: string;            // HTMLリッチテキスト
+  images: string[];        // S3 URL配列（最大3個）
+  flagged: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+
+  constructor(data: ReviewData) {
+    this.id = data.id;
+    this.productId = data.product_id;
+    this.userId = data.user_id;
+    this.rating = data.rating;
+    this.title = data.title;
+    this.body = data.body;
+    this.images = data.images || [];
+    this.flagged = data.flagged || false;
+    this.createdAt = new Date(data.created_at);
+    this.updatedAt = new Date(data.updated_at);
+  }
+
+  static calculateAverage(reviews: Review[]): number {
+    if (reviews.length === 0) return 0;
+    const sum = reviews.reduce((acc, r) => acc + r.rating, 0);
+    return sum / reviews.length;
+  }
+}
+```
+
+#### CreateReviewDto
+
+```typescript
+export interface CreateReviewDto {
+  productId: string;
+  userId: string;
+  rating: number;          // 1-5（整数）
+  title: string;           // 1-200文字
+  body: string;            // 1-10000文字（HTML）
+  images: string[];        // S3 URL配列（0-3個）
+}
+```
+
+#### UpdateReviewDto
+
+```typescript
+export interface UpdateReviewDto {
+  flagged: boolean;
+}
+```
+
+#### ReviewData（DB行の型）
+
+```typescript
+interface ReviewData {
+  id: string;
+  product_id: string;
+  user_id: string;
+  rating: number;
+  title: string;
+  body: string;
+  images: string[];
+  flagged: boolean;
+  created_at: string;
+  updated_at: string;
+}
+```
+
+### 3.4 エラーハンドリング方針
+
+**エラーの種類**
+
+1. **ValidationError**: リクエストデータのバリデーション失敗
+   - rating が1-5の範囲外
+   - title が空または200文字超過
+   - body が空または10000文字超過
+   - images が3個超過
+   - 画像ファイルサイズが5MB超過
+   - 画像形式が非対応（jpeg, png, gif以外）
+
+2. **NotFoundError**: リソースが見つからない
+   - 指定されたproductIdが存在しない
+   - 指定されたreviewIdが存在しない
+
+3. **UnauthorizedError**: 認証失敗
+   - JWTトークンが無効
+   - トークンが期限切れ
+
+4. **ForbiddenError**: 権限不足
+   - 管理者権限が必要な操作を非管理者が実行
+
+5. **InternalServerError**: サーバー内部エラー
+   - S3アップロード失敗
+   - DB接続エラー
+   - 予期しない例外
+
+**エラーの伝播方式**
+
+- Controller層: try-catch でエラーをキャッチし、`next(error)` で errorHandler ミドルウェアに委譲
+- Service層: ビジネスロジックのエラーを ValidationError、NotFoundError 等のカスタムエラークラスとして throw
+- Repository層: DB操作エラーをそのまま throw（Controllerでキャッチ）
+
+**ユーザーへの通知方式**
+
+errorHandlerミドルウェアが以下の形式でJSONレスポンスを返す。
+
+```typescript
+{
+  error: {
+    message: string,      // ユーザー向けエラーメッセージ
+    code: string,         // エラーコード（VALIDATION_ERROR, NOT_FOUND等）
+    status: number        // HTTPステータスコード
+  }
+}
+```
+
+**HTTPステータスコード対応表**
+
+| エラー種別 | HTTPステータス |
+|---|---|
+| ValidationError | 400 Bad Request |
+| UnauthorizedError | 401 Unauthorized |
+| ForbiddenError | 403 Forbidden |
+| NotFoundError | 404 Not Found |
+| InternalServerError | 500 Internal Server Error |
+
+## 4. 実装詳細仕様
+
+### 4.1 ReviewRepository
+
+#### 責務
+
+PostgreSQLのreviewsテーブルに対する生SQLクエリの実行。データベース操作の抽象化。
+
+#### インターフェース
+
+```typescript
+export class ReviewRepository {
+  /**
+   * レビューを作成
+   * @param data - 作成するレビューのデータ
+   * @returns 作成されたReviewオブジェクト
+   * @throws DB接続エラー、制約違反エラー
+   */
+  async create(data: CreateReviewDto): Promise<Review>
+
+  /**
+   * 指定された商品IDのレビューを全件取得（新着順）
+   * @param productId - 商品ID（UUID形式）
+   * @returns Reviewオブジェクトの配列
+   * @throws DB接続エラー
+   */
+  async findByProductId(productId: string): Promise<Review[]>
+
+  /**
+   * 指定されたIDのレビューを1件取得
+   * @param reviewId - レビューID（UUID形式）
+   * @returns Reviewオブジェクト、見つからない場合はnull
+   * @throws DB接続エラー
+   */
+  async findById(reviewId: string): Promise<Review | null>
+
+  /**
+   * 指定されたIDのレビューを削除
+   * @param reviewId - レビューID（UUID形式）
+   * @returns void
+   * @throws DB接続エラー
+   */
+  async delete(reviewId: string): Promise<void>
+
+  /**
+   * 指定されたIDのレビューのflaggedフラグを更新
+   * @param reviewId - レビューID（UUID形式）
+   * @param flagged - フラグの値（true/false）
+   * @returns 更新されたReviewオブジェクト
+   * @throws DB接続エラー、NotFoundError
+   */
+  async updateFlag(reviewId: string, flagged: boolean): Promise<Review>
+}
+```
+
+#### 内部ロジック
+
+**create(data: CreateReviewDto)**
+
+1. INSERTクエリを実行
+2. RETURNING句で挿入された行を取得
+3. ReviewDataをReviewオブジェクトに変換して返却
+
+```sql
+INSERT INTO reviews (product_id, user_id, rating, title, body, images)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *
+```
+
+**findByProductId(productId: string)**
+
+1. WHERE product_id = $1 で検索
+2. ORDER BY created_at DESC で新着順にソート
+3. 全行をReviewオブジェクトの配列に変換して返却
+
+```sql
+SELECT * FROM reviews
+WHERE product_id = $1
+ORDER BY created_at DESC
+```
+
+**findById(reviewId: string)**
+
+1. WHERE id = $1 で検索
+2. 1行取得
+3. 見つかればReviewオブジェクトに変換、見つからなければnullを返却
+
+```sql
+SELECT * FROM reviews
+WHERE id = $1
+```
+
+**delete(reviewId: string)**
+
+1. DELETEクエリを実行
+2. 削除行数を確認（0行の場合でもエラーにしない）
+
+```sql
+DELETE FROM reviews
+WHERE id = $1
+```
+
+**updateFlag(reviewId: string, flagged: boolean)**
+
+1. UPDATEクエリを実行
+2. RETURNING句で更新された行を取得
+3. 0行の場合はNotFoundErrorをthrow
+4. 更新された行をReviewオブジェクトに変換して返却
+
+```sql
+UPDATE reviews
+SET flagged = $1, updated_at = NOW()
+WHERE id = $2
+RETURNING *
+```
+
+#### 依存関係
+
+- `db`モジュール（PostgreSQL接続プール）
+- `Review`モデルクラス
+- `CreateReviewDto`型
+
+#### エッジケース
+
+| ケース | 処理方法 |
+|---|---|
+| productIdが存在しない | DB側で外部キー制約違反エラーが発生。そのままthrow |
+| userIdが存在しない | DB側で外部キー制約違反エラーが発生。そのままthrow |
+| imagesが空配列 | そのまま保存（NULL制約はないため問題なし） |
+| findByProductIdで該当レビューが0件 | 空配列を返却 |
+| deleteで存在しないIDを指定 | 0行削除。エラーにはしない（冪等性を保つ） |
+| updateFlagで存在しないIDを指定 | NotFoundErrorをthrow |
+
+### 4.2 ReviewService
+
+#### 責務
+
+- レビュー作成時のバリデーション
+- ビジネスルールの検証（rating範囲、文字数制限、画像枚数制限）
+- レビュー一覧取得時の平均評価計算
+- レビュー削除時の存在確認
+
+#### インターフェース
+
+```typescript
+export class ReviewService {
+  constructor(private reviewRepository: ReviewRepository) {}
+
+  /**
+   * レビューを作成
+   * @param data - 作成するレビューのデータ
+   * @returns 作成されたReviewオブジェクト
+   * @throws ValidationError（バリデーション失敗時）
+   * @throws NotFoundError（productId/userIdが存在しない時）
+   */
+  async createReview(data: CreateReviewDto): Promise<Review>
+
+  /**
+   * 指定された商品のレビュー一覧と平均評価を取得
+   * @param productId - 商品ID（UUID形式）
+   * @returns { reviews: Review[], averageRating: number, reviewCount: number }
+   * @throws なし（該当レビューが0件でも空配列とaverageRating=0を返す）
+   */
+  async getProductReviews(productId: string): Promise<{
+    reviews: Review[];
+    averageRating: number;
+    reviewCount: number;
+  }>
+
+  /**
+   * レビューを削除
+   * @param reviewId - レビューID（UUID形式）
+   * @returns void
+   * @throws NotFoundError（reviewIdが存在しない時）
+   */
+  async deleteReview(reviewId: string): Promise<void>
+
+  /**
+   * レビューにフラグを設定
+   * @param reviewId - レビューID（UUID形式）
+   * @param flagged - フラグの値（true/false）
+   * @returns 更新されたReviewオブジェクト
+   * @throws NotFoundError（reviewIdが存在しない時）
+   */
+  async flagReview(reviewId: string, flagged: boolean): Promise<Review>
+
+  /**
+   * レビューデータをバリデート（private）
+   * @param data - バリデーション対象データ
+   * @throws ValidationError（バリデーション失敗時）
+   */
+  private validateReview(data: CreateReviewDto): void
+}
+```
+
+#### 内部ロジック
+
+**createReview(data: CreateReviewDto)**
+
+1. `validateReview(data)` を呼び出してバリデーション
+2. `reviewRepository.create(data)` を呼び出してDB保存
+3. 外部キー制約違反エラーをキャッチし、NotFoundErrorに変換
+4. 作成されたReviewオブジェクトを返却
+
+**getProductReviews(productId: string)**
+
+1. `reviewRepository.findByProductId(productId)` を呼び出してレビュー一覧取得
+2. `Review.calculateAverage(reviews)` で平均評価を計算
+3. レビュー件数を取得（reviews.length）
+4. `{ reviews, averageRating, reviewCount }` を返却
+
+**deleteReview(reviewId: string)**
+
+1. `reviewRepository.findById(reviewId)` を呼び出して存在確認
+2. 見つからない場合はNotFoundErrorをthrow
+3. `reviewRepository.delete(reviewId)` を呼び出して削除
+
+**flagReview(reviewId: string, flagged: boolean)**
+
+1. `reviewRepository.updateFlag(reviewId, flagged)` を呼び出して更新
+2. NotFoundErrorはRepositoryから伝播
+3. 更新されたReviewオブジェクトを返却
+
+**validateReview(data: CreateReviewDto)**
+
+1. ratingが1-5の整数か検証（範囲外ならValidationErrorをthrow）
+2. titleが1-200文字か検証（範囲外ならValidationErrorをthrow）
+3. bodyが1-10000文字か検証（範囲外ならValidationErrorをthrow）
+4. imagesが0-3個か検証（範囲外ならValidationErrorをthrow）
+5. imagesの各URLが有効なHTTP(S) URLか検証（無効ならValidationErrorをthrow）
+
+検証内容の詳細:
+
+```typescript
+// rating: 1-5の整数
+if (!Number.isInteger(data.rating) || data.rating < 1 || data.rating > 5) {
+  throw new ValidationError('Rating must be an integer between 1 and 5');
+}
+
+// title: 1-200文字
+if (!data.title || data.title.trim().length === 0) {
+  throw new ValidationError('Title is required');
+}
+if (data.title.length > 200) {
+  throw new ValidationError('Title must be 200 characters or less');
+}
+
+// body: 1-10000文字
+if (!data.body || data.body.trim().length === 0) {
+  throw new ValidationError('Body is required');
+}
+if (data.body.length > 10000) {
+  throw new ValidationError('Body must be 10000 characters or less');
+}
+
+// images: 0-3個
+if (data.images.length > 3) {
+  throw new ValidationError('Maximum 3 images allowed');
+}
+
+// images: 各URLが有効なHTTP(S) URL
+for (const url of data.images) {
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    throw new ValidationError('Invalid image URL');
+  }
+}
+```
+
+#### 依存関係
+
+- ReviewRepository
+- Reviewモデルクラス
+- ValidationError、NotFoundError（カスタムエラークラス）
+
+#### エッジケース
+
+| ケース | 処理方法 |
+|---|---|
+| ratingが小数 | ValidationErrorをthrow（"Rating must be an integer between 1 and 5"） |
+| titleが空文字列 | ValidationErrorをthrow（"Title is required"） |
+| bodyがHTMLタグのみ（空白除去後に空） | ValidationErrorをthrow（"Body is required"） |
+| imagesが空配列 | 正常処理（画像なしレビューを許可） |
+| imagesのURLが不正 | ValidationErrorをthrow（"Invalid image URL"） |
+| productIdが存在しない | RepositoryからのDB制約違反エラーをキャッチし、NotFoundError("Product not found")をthrow |
+| getProductReviewsで該当レビューが0件 | `{ reviews: [], averageRating: 0, reviewCount: 0 }` を返却 |
+
+### 4.3 ReviewController
+
+#### 責務
+
+- HTTPリクエストの受け取りとレスポンスの返却
+- リクエストボディ・パラメータの抽出
+- multipart/form-dataのパース（画像アップロード）
+- ImageUploadServiceを呼び出してS3アップロード
+- ReviewServiceを呼び出してビジネスロジック実行
+- エラーをnext(error)で errorHandler に委譲
+
+#### インターフェース
+
+```typescript
+export class ReviewController {
+  constructor(
+    private reviewService: ReviewService,
+    private imageUploadService: ImageUploadService
+  ) {}
+
+  /**
+   * レビュー投稿
+   * POST /api/reviews
+   * Content-Type: multipart/form-data
+   * Body: { productId, rating, title, body, images[] }
+   * 認証: 必須（JWT）
+   */
+  async createReview(req: Request, res: Response, next: NextFunction): Promise<void>
+
+  /**
+   * 商品のレビュー一覧取得
+   * GET /api/products/:id/reviews
+   * 認証: 不要
+   */
+  async getProductReviews(req: Request, res: Response, next: NextFunction): Promise<void>
+
+  /**
+   * レビュー削除
+   * DELETE /api/reviews/:id
+   * 認証: 必須（管理者のみ）
+   */
+  async deleteReview(req: Request, res: Response, next: NextFunction): Promise<void>
+
+  /**
+   * レビューフラグ設定
+   * PATCH /api/reviews/:id/flag
+   * Body: { flagged: boolean }
+   * 認証: 必須（管理者のみ）
+   */
+  async flagReview(req: Request, res: Response, next: NextFunction): Promise<void>
+}
+```
+
+#### 内部ロジック
+
+**createReview(req: Request, res: Response, next: NextFunction)**
+
+1. multiparty を使用してリクエストボディをパース
+2. フォームフィールドから productId, rating, title, body を抽出
+3. アップロードされた画像ファイルを取得（最大3個）
+4. 画像ファイルのバリデーション（ファイルサイズ5MB以下、形式jpeg/png/gif）
+5. `imageUploadService.uploadImages(files)` を呼び出してS3にアップロード
+6. アップロードされた画像URLの配列を取得
+7. CreateReviewDtoを構築（userId は req.user.id から取得）
+8. `reviewService.createReview(dto)` を呼び出してレビュー作成
+9. 成功レスポンスを返却: `res.status(201).json({ data: review })`
+10. エラー発生時は `next(error)` で委譲
+
+**getProductReviews(req: Request, res: Response, next: NextFunction)**
+
+1. パスパラメータから productId を抽出（req.params.id）
+2. `reviewService.getProductReviews(productId)` を呼び出してレビュー一覧取得
+3. 成功レスポンスを返却: `res.json({ data: reviews, averageRating, reviewCount })`
+4. エラー発生時は `next(error)` で委譲
+
+**deleteReview(req: Request, res: Response, next: NextFunction)**
+
+1. パスパラメータから reviewId を抽出（req.params.id）
+2. `reviewService.findById(reviewId)` を呼び出してレビュー取得（画像URL取得のため）
+3. `reviewService.deleteReview(reviewId)` を呼び出してレビュー削除
+4. `imageUploadService.deleteImages(review.images)` を呼び出してS3の画像削除
+5. 成功レスポンスを返却: `res.status(204).send()`
+6. エラー発生時は `next(error)` で委譲
+
+**flagReview(req: Request, res: Response, next: NextFunction)**
+
+1. パスパラメータから reviewId を抽出（req.params.id）
+2. リクエストボディから flagged を抽出（req.body.flagged）
+3. `reviewService.flagReview(reviewId, flagged)` を呼び出してフラグ更新
+4. 成功レスポンスを返却: `res.json({ data: updatedReview })`
+5. エラー発生時は `next(error)` で委譲
+
+#### 依存関係
+
+- ReviewService
+- ImageUploadService
+- multiparty（フォームパース）
+- Express（Request, Response, NextFunction）
+
+#### エッジケース
+
+| ケース | 処理方法 |
+|---|---|
+| createReviewで画像が0個 | 正常処理（images: []でレビュー作成） |
+| createReviewで画像が3個超過 | ValidationErrorをthrow（"Maximum 3 images allowed"） |
+| 画像ファイルサイズが5MB超過 | ValidationErrorをthrow（"Image file size must be 5MB or less"） |
+| 画像ファイル形式が非対応 | ValidationErrorをthrow（"Supported image formats: jpeg, png, gif"） |
+| S3アップロード失敗 | InternalServerErrorをthrow（"Failed to upload images"） |
+| deleteReviewで存在しないID | ReviewServiceからNotFoundErrorが伝播 |
+| deleteReviewでS3削除失敗 | エラーログを出力するが処理は継続（DB上のレビューは削除済みのため） |
+| flagReviewでflaggedが boolean以外 | ValidationErrorをthrow（"flagged must be boolean"） |
+
+### 4.4 ImageUploadService
+
+#### 責務
+
+- S3互換ストレージへの画像アップロード
+- S3から画像を削除
+- ファイル名の生成（UUID + 拡張子）
+- 画像URLの生成
+
+#### インターフェース
+
+```typescript
+export class ImageUploadService {
+  constructor(
+    private s3Client: S3Client,
+    private bucketName: string,
+    private region: string
+  ) {}
+
+  /**
+   * 複数の画像をS3にアップロード
+   * @param files - アップロードする画像ファイルの配列
+   * @returns アップロードされた画像のURL配列
+   * @throws InternalServerError（S3アップロード失敗時）
+   */
+  async uploadImages(files: ImageFile[]): Promise<string[]>
+
+  /**
+   * S3から複数の画像を削除
+   * @param imageUrls - 削除する画像のURL配列
+   * @returns void
+   * @throws InternalServerError（S3削除失敗時）
+   */
+  async deleteImages(imageUrls: string[]): Promise<void>
+
+  /**
+   * ファイル名を生成（private）
+   * @param originalName - 元のファイル名
+   * @returns UUID + 拡張子の形式のファイル名（例: "550e8400-e29b-41d4-a716-446655440000.jpg"）
+   */
+  private generateFileName(originalName: string): string
+}
+```
+
+#### 内部ロジック
+
+**uploadImages(files: ImageFile[])**
+
+1. 各ファイルに対してループ処理
+2. `generateFileName(file.originalName)` でユニークなファイル名を生成
+3. PutObjectCommandを使用してS3にアップロード
+   - Key: `reviews/{fileName}`
+   - Body: file.buffer
+   - ContentType: file.mimetype
+4. アップロード成功後、URLを生成: `https://{bucketName}.s3.{region}.amazonaws.com/reviews/{fileName}`
+5. 全URLを配列で返却
+6. アップロード失敗時はInternalServerError("Failed to upload images")をthrow
+
+```typescript
+const command = new PutObjectCommand({
+  Bucket: this.bucketName,
+  Key: `reviews/${fileName}`,
+  Body: file.buffer,
+  ContentType: file.mimetype,
+  ACL: 'public-read' // 公開読み取り可能
+});
+
+await this.s3Client.send(command);
+```
+
+**deleteImages(imageUrls: string[])**
+
+1. 各URLからキー（Key）を抽出
+   - 例: `https://bucket.s3.region.amazonaws.com/reviews/xxx.jpg` → `reviews/xxx.jpg`
+2. DeleteObjectCommandを使用してS3から削除
+3. 全画像の削除を完了
+4. 削除失敗時はInternalServerError("Failed to delete images")をthrow
+
+```typescript
+const key = url.split('.amazonaws.com/')[1]; // "reviews/xxx.jpg"
+const command = new DeleteObjectCommand({
+  Bucket: this.bucketName,
+  Key: key
+});
+
+await this.s3Client.send(command);
+```
+
+**generateFileName(originalName: string)**
+
+1. UUID v4 を生成
+2. 元のファイル名から拡張子を抽出（path.extname()を使用）
+3. `{uuid}{拡張子}` の形式で返却
+   - 例: "550e8400-e29b-41d4-a716-446655440000.jpg"
+
+```typescript
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+
+const uuid = uuidv4();
+const ext = path.extname(originalName); // ".jpg"
+return `${uuid}${ext}`;
+```
+
+#### 依存関係
+
+- @aws-sdk/client-s3（S3Client, PutObjectCommand, DeleteObjectCommand）
+- uuid（v4）
+- path（extname）
+- InternalServerError（カスタムエラークラス）
+
+#### エッジケース
+
+| ケース | 処理方法 |
+|---|---|
+| files配列が空 | 空配列を返却 |
+| imageUrls配列が空 | 何もせず正常終了 |
+| S3アップロード時にネットワークエラー | InternalServerErrorをthrow、ロールバックは行わない（アップロード済みの画像は残る） |
+| S3削除時に対象ファイルが存在しない | エラーにしない（冪等性を保つ） |
+| 拡張子がない元ファイル名 | 拡張子なしでアップロード（例: "550e8400-e29b-41d4-a716-446655440000"） |
+
+### 4.5 imageValidator（ユーティリティ）
+
+#### 責務
+
+- アップロードされた画像ファイルのバリデーション
+- 画像URLのバリデーション
+
+#### インターフェース
+
+```typescript
+/**
+ * アップロードされた画像ファイルをバリデート
+ * @param files - バリデーション対象のファイル配列
+ * @throws ValidationError（バリデーション失敗時）
+ */
+export function validateImageFiles(files: ImageFile[]): void
+
+/**
+ * 画像URLをバリデート
+ * @param urls - バリデーション対象のURL配列
+ * @throws ValidationError（バリデーション失敗時）
+ */
+export function validateImageUrls(urls: string[]): void
+```
+
+#### 内部ロジック
+
+**validateImageFiles(files: ImageFile[])**
+
+1. files.length が3以下であることを確認（超過時はValidationError）
+2. 各ファイルに対してループ処理
+3. ファイルサイズが5MB（5 * 1024 * 1024 bytes）以下であることを確認
+4. MIMEタイプが `image/jpeg`, `image/png`, `image/gif` のいずれかであることを確認
+5. 全てのファイルが条件を満たせば正常終了
+
+```typescript
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif'];
+
+if (files.length > 3) {
+  throw new ValidationError('Maximum 3 images allowed');
+}
+
+for (const file of files) {
+  if (file.size > MAX_FILE_SIZE) {
+    throw new ValidationError(`Image file size must be 5MB or less: ${file.originalName}`);
+  }
+  if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    throw new ValidationError(`Supported image formats: jpeg, png, gif. Invalid: ${file.originalName}`);
+  }
+}
+```
+
+**validateImageUrls(urls: string[])**
+
+1. urls.length が3以下であることを確認
+2. 各URLに対してループ処理
+3. URLが `http://` または `https://` で始まることを確認
+4. URLが有効な形式であることを確認（URL constructorでパース可能か）
+5. 全てのURLが条件を満たせば正常終了
+
+```typescript
+if (urls.length > 3) {
+  throw new ValidationError('Maximum 3 image URLs allowed');
+}
+
+for (const url of urls) {
+  try {
+    new URL(url); // URLパースエラーがあればthrow
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      throw new Error();
+    }
+  } catch {
+    throw new ValidationError(`Invalid image URL: ${url}`);
+  }
+}
+```
+
+#### 依存関係
+
+- ValidationError（カスタムエラークラス）
+
+#### エッジケース
+
+| ケース | 処理方法 |
+|---|---|
+| files配列が空 | 正常終了（画像なしレビューを許可） |
+| ファイルサイズがちょうど5MB | 正常終了（5MB以下に含まれる） |
+| MIMEタイプがimage/svg+xml | ValidationErrorをthrow（サポート対象外） |
+| URLがdata:スキーム | ValidationErrorをthrow（http(s)のみ許可） |
+
+### 4.6 auth.ts ミドルウェア（修正）
+
+#### 責務
+
+- 既存: JWT認証（requireAuth関数）
+- 新規: 管理者権限チェック（requireAdmin関数）
+
+#### インターフェース
+
+```typescript
+/**
+ * JWT認証ミドルウェア（既存）
+ * リクエストヘッダーのAuthorizationトークンを検証
+ * 有効なトークンの場合、req.user にユーザー情報をセット
+ */
+export function requireAuth(req: Request, res: Response, next: NextFunction): void
+
+/**
+ * 管理者権限チェックミドルウェア（新規）
+ * requireAuth の後に使用
+ * req.user.role が 'admin' であることを確認
+ * @throws ForbiddenError（管理者でない場合）
+ */
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void
+```
+
+#### 内部ロジック（requireAdmin）
+
+1. req.user の存在を確認（requireAuthで設定されているはず）
+2. req.user.role が 'admin' であることを確認
+3. 管理者でない場合はForbiddenError("Admin access required")をthrow
+4. 管理者の場合は next() を呼び出して次の処理へ
+
+```typescript
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+  try {
+    if (!req.user) {
+      throw new UnauthorizedError('Authentication required');
+    }
+    if (req.user.role !== 'admin') {
+      throw new ForbiddenError('Admin access required');
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+```
+
+#### 依存関係
+
+- ForbiddenError、UnauthorizedError（カスタムエラークラス）
+- Express（Request, Response, NextFunction）
+
+#### エッジケース
+
+| ケース | 処理方法 |
+|---|---|
+| requireAuthをスキップしてrequireAdminを呼び出し | UnauthorizedErrorをthrow（req.userが存在しない） |
+| req.user.roleがundefined | ForbiddenErrorをthrow（'admin'と一致しない） |
+| req.user.roleが'user' | ForbiddenErrorをthrow（'admin'と一致しない） |
+
+### 4.7 routes/index.ts（修正）
+
+#### 責務
+
+レビュー関連の4つのエンドポイントを追加
+
+#### 追加するルート
+
+```typescript
+import { requireAuth, requireAdmin } from '../middleware/auth';
+import { ReviewController } from '../controllers/reviewController';
+import { ReviewService } from '../services/reviewService';
+import { ReviewRepository } from '../repositories/reviewRepository';
+import { ImageUploadService } from '../services/imageUploadService';
+import { S3Client } from '@aws-sdk/client-s3';
+
+// 依存性注入
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION || 'us-east-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
+  },
+  endpoint: process.env.S3_ENDPOINT // S3互換ストレージのエンドポイント
+});
+
+const imageUploadService = new ImageUploadService(
+  s3Client,
+  process.env.S3_BUCKET_NAME || 'shopnow-reviews',
+  process.env.AWS_REGION || 'us-east-1'
+);
+
+const reviewRepository = new ReviewRepository();
+const reviewService = new ReviewService(reviewRepository);
+const reviewController = new ReviewController(reviewService, imageUploadService);
+
+// ルート定義
+router.post(
+  '/api/reviews',
+  requireAuth,
+  reviewController.createReview.bind(reviewController)
+);
+
+router.get(
+  '/api/products/:id/reviews',
+  reviewController.getProductReviews.bind(reviewController)
+);
+
+router.delete(
+  '/api/reviews/:id',
+  requireAuth,
+  requireAdmin,
+  reviewController.deleteReview.bind(reviewController)
+);
+
+router.patch(
+  '/api/reviews/:id/flag',
+  requireAuth,
+  requireAdmin,
+  reviewController.flagReview.bind(reviewController)
+);
+```
+
+#### 内部ロジック
+
+1. 環境変数からS3設定を読み込み（AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_ENDPOINT, S3_BUCKET_NAME）
+2. S3Clientをインスタンス化
+3. ImageUploadService, ReviewRepository, ReviewService, ReviewControllerを順にインスタンス化（依存性注入）
+4. 4つのルートを定義
+5. .bind(reviewController) でthisコンテキストを固定
+
+#### 依存関係
+
+- すべてのレビュー関連クラス
+- 認証ミドルウェア
+
+#### エッジケース
+
+| ケース | 処理方法 |
+|---|---|
+| 環境変数が未設定 | アプリケーション起動時にエラー（process.env.XXX! で強制アクセス） |
+| S3_ENDPOINTが未設定 | AWS S3を使用（デフォルト動作） |
+
+## 5. ユニットテスト戦略
+
+### 5.1 テスト方針
+
+**テストフレームワーク**
+- Jest（既存プロジェクトで使用中）
+- supertest（APIエンドポイントの統合テスト用）
+
+**カバレッジ目標**
+- 全体: 80%以上
+- 重要なビジネスロジック（ReviewService, imageValidator）: 90%以上
+
+**モック戦略**
+
+| 対象 | モック方法 |
+|---|---|
+| ReviewRepository | Jest mock関数でモック（ReviewServiceのテスト用） |
+| PostgreSQL接続 | テスト用DBを使用（統合テスト）、またはRepositoryをモック（ユニットテスト） |
+| S3Client | Jest mock（ImageUploadServiceのテスト用） |
+| Express Request/Response | supertestのリクエストオブジェクト、またはモックオブジェクト |
+
+**テストデータ管理**
+- テスト用フィクスチャは各テストファイルに定義
+- テストDB用のシードデータは `__tests__/fixtures/` に配置
+
+### 5.2 テストケース一覧
+
+#### __tests__/review.test.ts（統合テスト）
+
+| テストケース | 検証内容 |
+|---|---|
+| POST /api/reviews - 成功（画像あり） | レビューが正常に作成され、201とReviewオブジェクトが返却される |
+| POST /api/reviews - 成功（画像なし） | 画像なしでレビューが作成される |
+| POST /api/reviews - 失敗: rating範囲外 | 400 ValidationErrorが返却される |
+| POST /api/reviews - 失敗: title空 | 400 ValidationErrorが返却される |
+| POST /api/reviews - 失敗: body空 | 400 ValidationErrorが返却される |
+| POST /api/reviews - 失敗: 画像4個 | 400 ValidationErrorが返却される |
+| POST /api/reviews - 失敗: 画像サイズ超過 | 400 ValidationErrorが返却される |
+| POST /api/reviews - 失敗: 画像形式不正 | 400 ValidationErrorが返却される |
+| POST /api/reviews - 失敗: 未認証 | 401 UnauthorizedErrorが返却される |
+| POST /api/reviews - 失敗: productId存在しない | 404 NotFoundErrorが返却される |
+| GET /api/products/:id/reviews - 成功 | レビュー一覧と平均評価が返却される |
+| GET /api/products/:id/reviews - レビュー0件 | 空配列とaverageRating=0が返却される |
+| DELETE /api/reviews/:id - 成功 | 204が返却され、レビューとS3画像が削除される |
+| DELETE /api/reviews/:id - 失敗: 非管理者 | 403 ForbiddenErrorが返却される |
+| DELETE /api/reviews/:id - 失敗: reviewId存在しない | 404 NotFoundErrorが返却される |
+| PATCH /api/reviews/:id/flag - 成功 | フラグが更新され、更新後のReviewが返却される |
+| PATCH /api/reviews/:id/flag - 失敗: 非管理者 | 403 ForbiddenErrorが返却される |
+| PATCH /api/reviews/:id/flag - 失敗: flaggedが非boolean | 400 ValidationErrorが返却される |
+
+#### __tests__/unit/reviewService.test.ts（ユニットテスト）
+
+| テストケース | 検証内容 |
+|---|---|
+| createReview - 成功 | repositoryのcreateが正しいパラメータで呼ばれる |
+| createReview - 失敗: rating=0 | ValidationErrorがthrowされる |
+| createReview - 失敗: rating=6 | ValidationErrorがthrowされる |
+| createReview - 失敗: rating=3.5（小数） | ValidationErrorがthrowされる |
+| createReview - 失敗: title空文字列 | ValidationErrorがthrowされる |
+| createReview - 失敗: title=201文字 | ValidationErrorがthrowされる |
+| createReview - 失敗: body空文字列 | ValidationErrorがthrowされる |
+| createReview - 失敗: body=10001文字 | ValidationErrorがthrowされる |
+| createReview - 失敗: images=4個 | ValidationErrorがthrowされる |
+| createReview - 失敗: 画像URLが不正 | ValidationErrorがthrowされる |
+| createReview - 失敗: productId存在しない | NotFoundErrorがthrowされる（DB制約違反をキャッチ） |
+| getProductReviews - 成功: レビュー3件 | 平均評価が正しく計算される |
+| getProductReviews - 成功: レビュー0件 | averageRating=0が返却される |
+| deleteReview - 成功 | repositoryのdeleteが呼ばれる |
+| deleteReview - 失敗: reviewId存在しない | NotFoundErrorがthrowされる |
+| flagReview - 成功 | repositoryのupdateFlagが正しいパラメータで呼ばれる |
+| flagReview - 失敗: reviewId存在しない | NotFoundErrorがthrowされる |
+
+#### __tests__/unit/imageUploadService.test.ts（ユニットテスト）
+
+| テストケース | 検証内容 |
+|---|---|
+| uploadImages - 成功: 1個 | S3にPutObjectCommandが送信され、URLが返却される |
+| uploadImages - 成功: 3個 | 3つのURLが返却される |
+| uploadImages - 成功: 0個 | 空配列が返却される |
+| uploadImages - 失敗: S3エラー | InternalServerErrorがthrowされる |
+| deleteImages - 成功: 1個 | S3にDeleteObjectCommandが送信される |
+| deleteImages - 成功: 0個 | 何も実行されない |
+| deleteImages - 失敗: S3エラー | InternalServerErrorがthrowされる |
+| generateFileName - 拡張子あり | UUID + 拡張子の形式が返却される |
+| generateFileName - 拡張子なし | UUIDのみが返却される |
+
+#### __tests__/unit/imageValidator.test.ts（ユニットテスト）
+
+| テストケース | 検証内容 |
+|---|---|
+| validateImageFiles - 成功: 0個 | エラーがthrowされない |
+| validateImageFiles - 成功: 3個 | エラーがthrowされない |
+| validateImageFiles - 失敗: 4個 | ValidationErrorがthrowされる |
+| validateImageFiles - 失敗: サイズ5MB超過 | ValidationErrorがthrowされる |
+| validateImageFiles - 失敗: MIMEタイプがimage/svg+xml | ValidationErrorがthrowされる |
+| validateImageUrls - 成功: httpsのURL | エラーがthrowされない |
+| validateImageUrls - 失敗: 4個 | ValidationErrorがthrowされる |
+| validateImageUrls - 失敗: data:スキーム | ValidationErrorがthrowされる |
+| validateImageUrls - 失敗: 不正なURL | ValidationErrorがthrowされる |
+
+#### __tests__/unit/reviewRepository.test.ts（ユニットテスト）
+
+| テストケース | 検証内容 |
+|---|---|
+| create - 成功 | INSERTクエリが実行され、Reviewオブジェクトが返却される |
+| findByProductId - 成功: 2件 | 新着順でReview配列が返却される |
+| findByProductId - 成功: 0件 | 空配列が返却される |
+| findById - 成功 | Reviewオブジェクトが返却される |
+| findById - 失敗: 存在しない | nullが返却される |
+| delete - 成功 | DELETEクエリが実行される |
+| delete - 冪等性: 存在しないID | エラーにならない |
+| updateFlag - 成功 | UPDATEクエリが実行され、Reviewオブジェクトが返却される |
+| updateFlag - 失敗: 存在しないID | NotFoundErrorがthrowされる |
+
+### 5.3 テストデータ
+
+#### フィクスチャ: validReviewData
+
+```typescript
+export const validReviewData: CreateReviewDto = {
+  productId: '550e8400-e29b-41d4-a716-446655440000',
+  userId: '660e8400-e29b-41d4-a716-446655440000',
+  rating: 5,
+  title: 'Great product!',
+  body: '<p>This is an excellent product. Highly recommended!</p>',
+  images: [
+    'https://bucket.s3.region.amazonaws.com/reviews/image1.jpg',
+    'https://bucket.s3.region.amazonaws.com/reviews/image2.jpg'
+  ]
+};
+```
+
+#### フィクスチャ: mockImageFile
+
+```typescript
+export const mockImageFile: ImageFile = {
+  fieldname: 'images',
+  originalname: 'test-image.jpg',
+  encoding: '7bit',
+  mimetype: 'image/jpeg',
+  buffer: Buffer.from('fake-image-data'),
+  size: 1024 * 1024 // 1MB
+};
+```
+
+#### フィクスチャ: mockReview
+
+```typescript
+export const mockReview: Review = new Review({
+  id: '770e8400-e29b-41d4-a716-446655440000',
+  product_id: '550e8400-e29b-41d4-a716-446655440000',
+  user_id: '660e8400-e29b-41d4-a716-446655440000',
+  rating: 5,
+  title: 'Great product!',
+  body: '<p>This is an excellent product. Highly recommended!</p>',
+  images: ['https://bucket.s3.region.amazonaws.com/reviews/image1.jpg'],
+  flagged: false,
+  created_at: '2026-02-06T10:00:00Z',
+  updated_at: '2026-02-06T10:00:00Z'
+});
+```
+
+#### テストDB シードデータ（__tests__/fixtures/seed.sql）
+
+```sql
+-- テスト用商品
+INSERT INTO products (id, name, price, description)
+VALUES
+  ('550e8400-e29b-41d4-a716-446655440000', 'Test Product 1', 1000, 'Test description 1'),
+  ('550e8400-e29b-41d4-a716-446655440001', 'Test Product 2', 2000, 'Test description 2');
+
+-- テスト用ユーザー
+INSERT INTO users (id, email, password_hash, role)
+VALUES
+  ('660e8400-e29b-41d4-a716-446655440000', 'user@example.com', 'hashed_password', 'user'),
+  ('660e8400-e29b-41d4-a716-446655440001', 'admin@example.com', 'hashed_password', 'admin');
+
+-- テスト用レビュー
+INSERT INTO reviews (id, product_id, user_id, rating, title, body, images, flagged)
+VALUES
+  ('770e8400-e29b-41d4-a716-446655440000', '550e8400-e29b-41d4-a716-446655440000', '660e8400-e29b-41d4-a716-446655440000', 5, 'Great!', '<p>Excellent</p>', ARRAY['https://example.com/img1.jpg'], false),
+  ('770e8400-e29b-41d4-a716-446655440001', '550e8400-e29b-41d4-a716-446655440000', '660e8400-e29b-41d4-a716-446655440000', 4, 'Good', '<p>Nice product</p>', ARRAY[]::TEXT[], false);
+```
+
+## 6. 実装順序
+
+### ステップ 1: DBマイグレーション実行
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/migrations/001_create_reviews_table.sql`（新規作成）
+
+**依存**
+- なし
+
+**作業内容**
+1. マイグレーションファイルを作成
+2. reviewsテーブルのCREATE TABLE文を記述
+   - カラム: id, product_id, user_id, rating, title, body, images, flagged, created_at, updated_at
+   - 制約: PRIMARY KEY, FOREIGN KEY, CHECK (rating >= 1 AND rating <= 5)
+   - インデックス: product_id, user_id
+3. PostgreSQLに対してマイグレーション実行
+
+**完了条件**
+- `SELECT * FROM reviews;` が空のテーブルを返す
+
+---
+
+### ステップ 2: 依存ライブラリのインストール
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/package.json`（修正）
+
+**依存**
+- なし
+
+**作業内容**
+1. package.jsonに以下を追加
+   ```json
+   "dependencies": {
+     "@aws-sdk/client-s3": "^3.470.0",
+     "multiparty": "^4.2.3",
+     "uuid": "^9.0.1"
+   },
+   "devDependencies": {
+     "@types/multiparty": "^0.0.36",
+     "@types/uuid": "^9.0.7"
+   }
+   ```
+2. `npm install` 実行
+
+**完了条件**
+- node_modulesに上記パッケージがインストールされている
+
+---
+
+### ステップ 3: モデルクラスの実装
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/models/Review.ts`（新規作成）
+
+**依存**
+- なし
+
+**作業内容**
+1. Reviewクラスを定義
+2. コンストラクタでReviewData（DB行）を受け取り、snake_caseからcamelCaseに変換
+3. static calculateAverage メソッドを実装
+4. CreateReviewDto、UpdateReviewDto、ReviewData の型定義をエクスポート
+
+**完了条件**
+- TypeScriptコンパイルエラーがない
+- Review.calculateAverage([]) === 0 が成立
+
+---
+
+### ステップ 4: ImageValidatorユーティリティの実装
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/utils/imageValidator.ts`（新規作成）
+
+**依存**
+- ステップ 2（uuidライブラリ）
+
+**作業内容**
+1. validateImageFiles 関数を実装
+   - 画像枚数チェック（0-3個）
+   - ファイルサイズチェック（5MB以下）
+   - MIMEタイプチェック（image/jpeg, image/png, image/gif）
+2. validateImageUrls 関数を実装
+   - URL枚数チェック（0-3個）
+   - URLスキームチェック（http/https）
+   - URLパースチェック
+
+**完了条件**
+- ユニットテスト（__tests__/unit/imageValidator.test.ts）が全てパス
+
+---
+
+### ステップ 5: ImageUploadServiceの実装
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/services/imageUploadService.ts`（新規作成）
+
+**依存**
+- ステップ 2（@aws-sdk/client-s3、uuid）
+
+**作業内容**
+1. ImageUploadServiceクラスを定義
+2. コンストラクタでS3Client、bucketName、regionを受け取る
+3. uploadImages メソッドを実装
+   - generateFileName でユニークなファイル名生成
+   - PutObjectCommand でS3にアップロード
+   - 公開URLを生成して返却
+4. deleteImages メソッドを実装
+   - URLからキーを抽出
+   - DeleteObjectCommand で削除
+5. generateFileName メソッドを実装（UUID v4 + 拡張子）
+
+**完了条件**
+- ユニットテスト（__tests__/unit/imageUploadService.test.ts）が全てパス
+- S3モックでPutObjectCommand、DeleteObjectCommandが正しく呼ばれる
+
+---
+
+### ステップ 6: ReviewRepositoryの実装
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/repositories/reviewRepository.ts`（新規作成）
+
+**依存**
+- ステップ 1（DBマイグレーション）
+- ステップ 3（Reviewモデル）
+
+**作業内容**
+1. ReviewRepositoryクラスを定義
+2. create メソッドを実装（INSERT RETURNING）
+3. findByProductId メソッドを実装（SELECT WHERE product_id ORDER BY created_at DESC）
+4. findById メソッドを実装（SELECT WHERE id）
+5. delete メソッドを実装（DELETE WHERE id）
+6. updateFlag メソッドを実装（UPDATE SET flagged, updated_at RETURNING）
+
+**完了条件**
+- ユニットテスト（__tests__/unit/reviewRepository.test.ts）が全てパス
+- テストDBに対してCRUD操作が正しく動作
+
+---
+
+### ステップ 7: ReviewServiceの実装
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/services/reviewService.ts`（新規作成）
+
+**依存**
+- ステップ 3（Reviewモデル）
+- ステップ 6（ReviewRepository）
+
+**作業内容**
+1. ReviewServiceクラスを定義
+2. コンストラクタでReviewRepositoryを受け取る
+3. validateReview メソッドを実装（rating, title, body, imagesのバリデーション）
+4. createReview メソッドを実装
+   - validateReview呼び出し
+   - repository.create呼び出し
+   - 外部キー制約違反をNotFoundErrorに変換
+5. getProductReviews メソッドを実装
+   - repository.findByProductId呼び出し
+   - Review.calculateAverageで平均評価計算
+6. deleteReview メソッドを実装（存在確認 + repository.delete）
+7. flagReview メソッドを実装（repository.updateFlag）
+
+**完了条件**
+- ユニットテスト（__tests__/unit/reviewService.test.ts）が全てパス
+- Repositoryモックが正しく呼ばれる
+- バリデーションエラーが適切にthrowされる
+
+---
+
+### ステップ 8: authミドルウェアの修正
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/middleware/auth.ts`（修正）
+
+**依存**
+- なし
+
+**作業内容**
+1. requireAdmin関数を追加
+   - req.userの存在確認
+   - req.user.role === 'admin' の確認
+   - 管理者でない場合はForbiddenErrorをthrow
+
+**完了条件**
+- TypeScriptコンパイルエラーがない
+- requireAdmin関数が正しくエクスポートされている
+
+---
+
+### ステップ 9: ReviewControllerの実装
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/controllers/reviewController.ts`（新規作成）
+
+**依存**
+- ステップ 2（multiparty）
+- ステップ 4（imageValidator）
+- ステップ 5（ImageUploadService）
+- ステップ 7（ReviewService）
+
+**作業内容**
+1. ReviewControllerクラスを定義
+2. コンストラクタでReviewService、ImageUploadServiceを受け取る
+3. createReview メソッドを実装
+   - multipartyでフォームパース
+   - 画像バリデーション
+   - ImageUploadService.uploadImagesで画像アップロード
+   - ReviewService.createReviewでレビュー作成
+   - 201レスポンス
+4. getProductReviews メソッドを実装
+   - ReviewService.getProductReviewsでレビュー取得
+   - 200レスポンス
+5. deleteReview メソッドを実装
+   - ReviewService.findByIdでレビュー取得
+   - ReviewService.deleteReviewで削除
+   - ImageUploadService.deleteImagesで画像削除
+   - 204レスポンス
+6. flagReview メソッドを実装
+   - ReviewService.flagReviewでフラグ更新
+   - 200レスポンス
+
+**完了条件**
+- TypeScriptコンパイルエラーがない
+- エラーがnext(error)で正しく委譲される
+
+---
+
+### ステップ 10: ルーティングの追加
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/routes/index.ts`（修正）
+
+**依存**
+- ステップ 8（authミドルウェア）
+- ステップ 9（ReviewController）
+
+**作業内容**
+1. 環境変数からS3設定を読み込み
+2. S3Client、ImageUploadService、ReviewRepository、ReviewService、ReviewControllerをインスタンス化
+3. 4つのルートを追加
+   - POST /api/reviews（requireAuth）
+   - GET /api/products/:id/reviews
+   - DELETE /api/reviews/:id（requireAuth + requireAdmin）
+   - PATCH /api/reviews/:id/flag（requireAuth + requireAdmin）
+
+**完了条件**
+- アプリケーションが正常に起動する
+- 4つのエンドポイントがルーティングテーブルに登録される
+
+---
+
+### ステップ 11: 統合テストの実装
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/__tests__/review.test.ts`（新規作成）
+- `/home/r-toyama/work/ai-experimental/src/__tests__/fixtures/seed.sql`（新規作成）
+
+**依存**
+- ステップ 10（全APIエンドポイント）
+
+**作業内容**
+1. テストDBのセットアップ（seed.sql実行）
+2. supertest を使用してAPIエンドポイントのテストケースを実装
+   - POST /api/reviews の成功・失敗ケース
+   - GET /api/products/:id/reviews の成功ケース
+   - DELETE /api/reviews/:id の成功・失敗ケース
+   - PATCH /api/reviews/:id/flag の成功・失敗ケース
+3. テスト後のクリーンアップ（テストデータ削除）
+
+**完了条件**
+- 全統合テストがパス
+- カバレッジ80%以上
+
+---
+
+### ステップ 12: フロントエンド実装（レビュー一覧表示）
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/components/ReviewList.tsx`（新規作成）
+
+**依存**
+- ステップ 10（GET /api/products/:id/reviews エンドポイント）
+
+**作業内容**
+1. ReviewListコンポーネントを実装
+2. useEffect で /api/products/:id/reviews を fetch
+3. レビュー一覧を表示
+   - 平均評価と件数
+   - 各レビューの星評価、タイトル、本文、画像、投稿日時
+4. dangerouslySetInnerHTML で本文HTMLを表示
+
+**完了条件**
+- 商品詳細ページでレビュー一覧が正しく表示される
+- 平均評価が正しく計算される
+
+---
+
+### ステップ 13: フロントエンド実装（レビュー投稿フォーム）
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/components/ReviewForm.tsx`（新規作成）
+
+**依存**
+- ステップ 2（browser-image-compression）
+- ステップ 10（POST /api/reviews エンドポイント）
+
+**作業内容**
+1. ReviewFormコンポーネントを実装
+2. フォームフィールド: rating（星選択UI）、title、body（リッチテキストエディタ）、images（ファイル選択）
+3. クライアント側バリデーション
+   - rating: 1-5
+   - title: 1-200文字
+   - body: 1-10000文字
+   - images: 最大3個、各5MB以下
+4. 画像のクライアント側リサイズ（browser-image-compression）
+5. FormDataでPOST /api/reviews に送信
+6. 投稿成功後、レビュー一覧を再読み込み
+
+**完了条件**
+- レビュー投稿フォームが正しく動作する
+- バリデーションエラーが適切に表示される
+- 投稿後にレビュー一覧が更新される
+
+---
+
+### ステップ 14: 管理者機能の実装（レビュー削除・フラグ設定）
+
+**対象ファイル**
+- `/home/r-toyama/work/ai-experimental/src/components/AdminReviewActions.tsx`（新規作成）
+
+**依存**
+- ステップ 10（DELETE /api/reviews/:id、PATCH /api/reviews/:id/flag エンドポイント）
+
+**作業内容**
+1. AdminReviewActionsコンポーネントを実装
+2. 削除ボタン: DELETE /api/reviews/:id を実行
+3. フラグ設定ボタン: PATCH /api/reviews/:id/flag を実行
+4. 管理者ユーザーにのみ表示（req.user.role === 'admin'）
+5. アクション成功後、レビュー一覧を再読み込み
+
+**完了条件**
+- 管理者がレビューを削除・フラグ設定できる
+- 非管理者には操作ボタンが表示されない
+
+---
+
+### ステップ 15: エンドツーエンドテスト
+
+**対象ファイル**
+- なし（手動テスト）
+
+**依存**
+- ステップ 1-14の全て
+
+**作業内容**
+1. 開発環境でアプリケーションを起動
+2. 以下のシナリオを手動テスト
+   - ログインユーザーとしてレビュー投稿（画像あり/なし）
+   - 商品詳細ページでレビュー一覧と平均評価を確認
+   - 管理者としてレビュー削除・フラグ設定
+   - バリデーションエラーの確認
+3. ブラウザのDevToolsでネットワークリクエスト/レスポンスを確認
+
+**完了条件**
+- 全シナリオが正常に動作する
+- エラーハンドリングが適切に機能する
+- UIが要件通りに表示される
+
+---
+
+## 注意事項
+
+### コーディング規約
+
+- 変数・関数: camelCase（例: createReview, imageUrls）
+- クラス・型: PascalCase（例: ReviewService, CreateReviewDto）
+- 定数: UPPER_SNAKE_CASE（例: MAX_FILE_SIZE, ALLOWED_MIME_TYPES）
+- ファイル名: camelCase（例: reviewController.ts, imageUploadService.ts）
+
+### エラーハンドリング
+
+- カスタムエラークラス（ValidationError, NotFoundError, UnauthorizedError, ForbiddenError, InternalServerError）を使用
+- Controller層でtry-catchし、next(error)で委譲
+- Service層でビジネスロジックのエラーをthrow
+- errorHandlerミドルウェアで統一的にJSONレスポンスを返却
+
+### 環境変数
+
+以下の環境変数を.envファイルまたは環境に設定する必要がある。
+
+```env
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+S3_ENDPOINT=https://your-s3-compatible-endpoint.com  # オプション（AWS S3以外を使用する場合）
+S3_BUCKET_NAME=shopnow-reviews
+```
+
+### 外部ライブラリのバージョン
+
+- @aws-sdk/client-s3: ^3.470.0（S3互換ストレージアクセス）
+- multiparty: ^4.2.3（multipart/form-dataパース）
+- uuid: ^9.0.1（UUID生成）
+- browser-image-compression: ^2.0.2（クライアント側画像リサイズ）
+
+インストールコマンド:
+
+```bash
+npm install @aws-sdk/client-s3@^3.470.0 multiparty@^4.2.3 uuid@^9.0.1
+npm install --save-dev @types/multiparty@^0.0.36 @types/uuid@^9.0.7
+```
+
+フロントエンド:
+
+```bash
+npm install browser-image-compression@^2.0.2
+```
