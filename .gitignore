@@ -1,0 +1,3 @@
+.agent_audit/
+.agent_bench/
+.tasks/*/feedback-status.md

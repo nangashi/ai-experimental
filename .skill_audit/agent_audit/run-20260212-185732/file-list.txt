@@ -1,0 +1,9 @@
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/SKILL.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/templates/apply-improvements.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/agents/evaluator/criteria-effectiveness.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/agents/shared/instruction-clarity.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/agents/evaluator/scope-alignment.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/agents/evaluator/detection-coverage.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/agents/producer/workflow-completeness.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/agents/producer/output-format.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/agent_audit/agents/unclassified/scope-alignment.md

@@ -1,0 +1,10 @@
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/reviewer-efficiency.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/reviewer-architecture.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/verify-improvements.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/quality-criteria.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/consolidate-findings.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/apply-improvements.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/reviewer-ux.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/reviewer-stability.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/templates/analyze-skill-structure.md
+/home/toyama-ryosuke/ghq/github.com/nangashi/ai-experimental/.claude/skills/skill_improve/SKILL.md

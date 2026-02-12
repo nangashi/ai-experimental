@@ -1,0 +1,47 @@
+### Generality Critique Results
+
+#### Critical Issues (Perspective overly dependent on specific domains)
+None (but scope item 2 requires modification to remove language and tool dependencies)
+
+#### Scope Item Generality Evaluation
+| Scope Item | Classification | Reason | Improvement Proposal |
+|------------|----------------|--------|---------------------|
+| ユニットテストのカバレッジ目標 | Generic | Code coverage metrics (line coverage, branch coverage) are universal testing concepts applicable across programming languages, frameworks, and project types. Testing across 3 contexts: Java enterprise application (meaningful—JaCoCo coverage), Python data science project (meaningful—pytest-cov coverage), embedded C firmware (meaningful—gcov coverage). No industry, technology, or domain dependency. | None required. Coverage metrics are language-agnostic testing fundamentals. |
+| Jest / Mocha によるテスト実装 | Domain-Specific | This item has dual dependency issues: (1) Jest and Mocha are specific JavaScript testing frameworks (tool dependency), (2) "JavaScriptプロジェクト" explicitly limits to one programming language (language dependency). Testing across 3 contexts: JavaScript/TypeScript web app (meaningful), Python backend service (not meaningful—uses pytest/unittest), Go microservice (not meaningful—uses testing package). Fails "7 out of 10 projects" test across language-diverse software landscape. | Replace entirely with "テストフレームワークの選定と設定 - プロジェクトの技術スタックに適したテストフレームワークの選定理由と、基本的な設定（テスト実行環境、モック/スタブ設定、並列実行等）が定義されているか。" Remove both the specific tool names (Jest/Mocha) and the language restriction (JavaScript). This generalizes to framework selection principles across all languages. |
+| E2Eテストの自動化 | Generic | End-to-end testing based on user scenarios is a universal testing strategy applicable across application types. Testing across 3 contexts: web application (meaningful—Selenium/Playwright scenarios), mobile application (meaningful—Appium/Detox scenarios), REST API service (meaningful—integration test scenarios), data processing pipeline (meaningful—end-to-end data flow validation). Not limited to UI automation—the concept applies broadly to scenario-based testing. | None required. E2E testing is a widely recognized testing category applicable across technologies and domains. |
+| テストデータ管理戦略 | Generic | Test data preparation, initialization, and isolation are universal testing concerns. Testing across 3 contexts: database-driven application (meaningful—fixture data, database seeding), file-based system (meaningful—test file setup), API integration (meaningful—mock data preparation). Applicable across industries (finance, healthcare, e-commerce) and project types (web, mobile, backend, data). | None required. Test data management is a fundamental testing practice applicable universally. |
+| 継続的テストの実装 | Conditionally Generic | Continuous testing in CI/CD pipelines is a modern DevOps practice but assumes CI/CD infrastructure exists. Testing across 3 contexts: cloud-native microservices with GitHub Actions (meaningful—automated test execution), legacy system without CI (not meaningful—manual deployment), open-source project with CI setup (meaningful—GitHub Actions/Travis CI). Applicable to projects with CI/CD but not to: (1) legacy systems without automation, (2) early-stage prototypes without CI, (3) embedded systems with hardware-in-the-loop testing. | Add prerequisite: "CI/CD パイプラインを持つプロジェクトに適用" (applies to projects with CI/CD pipeline). Note: CI/CD is increasingly standard in modern software development, so this conditionally generic item has broad applicability (~7+ out of 10 modern projects). |
+
+#### Problem Bank Generality Evaluation
+- Generic: 3 items
+- Conditionally Generic: 1 item
+- Domain-Specific: 1 item (list specifically: "Jestの設定ファイルが不適切")
+
+Problem bank analysis:
+1. "テストカバレッジが50%未満" - Generic. Coverage percentage applies across all programming languages and project types. Testing across 3 contexts: Java backend (meaningful), React frontend (meaningful), Python data pipeline (meaningful).
+2. "Jestの設定ファイルが不適切" - Domain-Specific. "Jest" explicitly references a JavaScript testing framework. Not applicable to Python projects (pytest), Java projects (JUnit), Go projects (testing package), etc. Generalization: "テストフレームワークの設定が不適切" (Test framework configuration is inappropriate) or "テスト実行環境の設定が不足" (Test execution environment configuration is insufficient).
+3. "E2Eテストが手動実行のみ" - Generic. The problem of manual-only E2E testing (lack of automation) applies across web apps (Selenium), mobile apps (Appium), APIs (integration tests). Testing across 3 contexts: e-commerce web app (meaningful), mobile banking app (meaningful), REST API (meaningful).
+4. "テストデータが本番データのコピー" - Generic. Using production data for testing (security risk, privacy violation, data masking failure) is a universal anti-pattern. Applicable across industries (finance, healthcare, e-commerce) due to privacy regulations (GDPR, HIPAA, PCI-DSS) and security best practices.
+5. "CIでテストがスキップされている" - Conditionally Generic. "CI" (Continuous Integration) assumes CI/CD pipeline exists. Testing across 3 contexts: GitHub Actions workflow (meaningful—test skip detected), legacy system without CI (not meaningful—no CI exists), GitLab CI pipeline (meaningful). Applicable to projects with CI infrastructure.
+
+#### Improvement Proposals
+- **Scope Item 2 - Complete Rewrite**: Remove Jest/Mocha tool names and "JavaScriptプロジェクト" language restriction. Replace with: "テストフレームワークの選定と設定 - プロジェクトの要件（言語、フレームワーク、テスト種別）に適したテストフレームワークが選定され、基本的な設定（テスト実行方法、モック/フィクスチャ設定、並列実行、レポート出力等）が定義されているか。" This shifts focus from "Are you using Jest/Mocha?" to "Have you thoughtfully selected and configured a testing framework appropriate to your stack?".
+- **Scope Item 5 - Add Prerequisite**: Clarify "(CI/CD パイプラインを持つプロジェクトに適用)" to set expectations. Note: Since CI/CD is standard practice in modern development, this conditional scope is acceptable and broadly applicable.
+- **Problem Bank Item 2 - Generalize**: Replace "Jestの設定ファイルが不適切" with language-neutral phrasing: "テストフレームワークの設定が不適切で、テストが正しく実行されない" (Test framework configuration is inappropriate, causing tests to fail or not execute correctly). This applies to pytest.ini (Python), junit.xml (Java), testing package config (Go), etc.
+- **Overall Judgment**: Since only 1 out of 5 scope items is domain-specific (item 2 with dual tool+language dependency), the perspective does not require complete redesign. Recommend:
+  1. Rewrite scope item 2 to remove tool and language dependencies (mandatory)
+  2. Add prerequisite clarification for scope item 5 (optional but helpful)
+  3. Generalize problem bank item 2 to remove Jest-specific reference
+
+#### Confirmation (Positive Aspects)
+- **Strong testing fundamentals**: Items 1 (code coverage), 3 (E2E testing), 4 (test data management) represent universally recognized testing practices applicable across programming languages (Java, Python, JavaScript, Go, C++, Rust, etc.), frameworks, and industries.
+- **Appropriate use of standard terminology**: "カバレッジ" (coverage), "E2Eテスト" (end-to-end test), "CI/CD" are widely adopted industry terms, not proprietary concepts. Using established terminology is valuable for communication.
+- **Technology stack awareness without over-prescription**: Except for item 2's tool names, the perspective focuses on testing strategy (coverage goals, automation, data management) rather than mandating specific tools. This is the correct abstraction level for design review.
+- **Industry independence**: Testing concerns are equally relevant across finance, healthcare, e-commerce, SaaS, gaming, internal tools, open-source projects. No regulatory or domain-specific assumptions.
+- **Problem bank mostly generic**: 3 out of 5 problems are fully generic (low coverage, manual E2E, production data in tests), with 1 conditionally generic (CI-dependent) and 1 needing generalization (Jest reference).
+- **E2E testing appropriately generalized**: Item 3 correctly uses "E2Eテスト" (end-to-end test) rather than specific tools (Selenium, Cypress, Playwright, Appium). This demonstrates how to reference testing categories without tool lock-in, unlike item 2's Jest/Mocha mistake.
+- **Valuable test strategy coverage**: The perspective covers multiple testing dimensions (unit test coverage, framework setup, E2E automation, test data, continuous testing) providing comprehensive evaluation of testing design maturity.
+- **Clear boundary on conditional item**: Item 5's CI/CD dependency is a reasonable prerequisite. CI/CD represents modern software engineering practices adopted by the majority of professional development teams, making "conditionally generic" an acceptable classification.
+- **Easy path to full generality**: The perspective requires only one scope item rewrite (item 2 tool/language removal) and one problem bank generalization (Jest reference) to achieve strong cross-language, cross-framework generality.
+- **Demonstrates the boundary between standards and tools**: Compare item 2 (Jest/Mocha = specific tools = domain-specific) with item 1 (code coverage = universal concept = generic). This perspective illustrates the principle that testing strategies are generic while tool choices are implementation details.
+- **Realistic testing maturity model**: The progression from unit testing (item 1) → framework setup (item 2) → E2E automation (item 3) → data management (item 4) → continuous testing (item 5) reflects a logical testing maturity evolution applicable to diverse projects.

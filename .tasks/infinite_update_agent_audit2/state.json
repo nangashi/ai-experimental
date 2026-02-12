@@ -1,0 +1,23 @@
+{
+  "current_state": "INIT",
+  "iteration_count": 0,
+  "current_agent": null,
+  "next_action_hint": "Initialize workspace and copy analysis sub-agent templates to sub-agents/",
+  "current_cycle": {
+    "agent_round": 0,
+    "baseline_score": null,
+    "baseline_sd": null,
+    "baseline_test_doc": null,
+    "baseline_answer_key": null,
+    "baseline_domain": null,
+    "post_eval_score": null,
+    "post_eval_sd": null,
+    "improvements_planned": [],
+    "improvements_applied": [],
+    "improvement_index": 0
+  },
+  "meta_review_counter": 0,
+  "global_convergence_resets": 0,
+  "last_error": null,
+  "error_count": 0
+}

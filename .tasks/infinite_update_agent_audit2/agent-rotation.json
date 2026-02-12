@@ -1,0 +1,55 @@
+{
+  "agents": [
+    {
+      "name": "analyze-criteria",
+      "source_path": ".task/infinite_update_agent_audit2/templates/analyze-criteria.md",
+      "working_path": ".task/infinite_update_agent_audit2/sub-agents/analyze-criteria.md",
+      "perspective_path": ".claude/skills/agent_audit2/perspectives/analysis/criteria-effectiveness.md",
+      "test_type": "definition",
+      "status": "active",
+      "total_rounds": 0,
+      "consecutive_no_improvement": 0,
+      "best_score": null,
+      "last_score": null
+    },
+    {
+      "name": "analyze-scope",
+      "source_path": ".task/infinite_update_agent_audit2/templates/analyze-scope.md",
+      "working_path": ".task/infinite_update_agent_audit2/sub-agents/analyze-scope.md",
+      "perspective_path": ".claude/skills/agent_audit2/perspectives/analysis/scope-alignment.md",
+      "test_type": "definition",
+      "status": "active",
+      "total_rounds": 0,
+      "consecutive_no_improvement": 0,
+      "best_score": null,
+      "last_score": null
+    },
+    {
+      "name": "analyze-blind-spots",
+      "source_path": ".task/infinite_update_agent_audit2/templates/analyze-blind-spots.md",
+      "working_path": ".task/infinite_update_agent_audit2/sub-agents/analyze-blind-spots.md",
+      "perspective_path": ".claude/skills/agent_audit2/perspectives/analysis/blind-spots-detection.md",
+      "test_type": "definition+history",
+      "status": "active",
+      "total_rounds": 0,
+      "consecutive_no_improvement": 0,
+      "best_score": null,
+      "last_score": null
+    },
+    {
+      "name": "analyze-domain-knowledge",
+      "source_path": ".task/infinite_update_agent_audit2/templates/analyze-domain-knowledge.md",
+      "working_path": ".task/infinite_update_agent_audit2/sub-agents/analyze-domain-knowledge.md",
+      "perspective_path": ".claude/skills/agent_audit2/perspectives/analysis/domain-knowledge-adequacy.md",
+      "test_type": "definition",
+      "status": "active",
+      "total_rounds": 0,
+      "consecutive_no_improvement": 0,
+      "best_score": null,
+      "last_score": null
+    }
+  ],
+  "current_index": 0,
+  "convergence_threshold": 3,
+  "score_improvement_threshold": 0.5
+}
