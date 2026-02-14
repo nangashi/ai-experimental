@@ -35,17 +35,23 @@ Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 を順に実行します。
 1. 引数から `{skill_path}` を取得する（未指定の場合は `AskUserQuestion` で確認）
 2. 第二引数が `force` かどうかを判定し `{force_mode}` フラグ（true/false）を設定する
 3. `{skill_path}` を絶対パスに変換する
-3. Read で `{skill_path}/SKILL.md` の存在を確認する。不在の場合はエラー出力して終了:
+4. Read で `{skill_path}/SKILL.md` の存在を確認する。不在の場合はエラー出力して終了:
    「SKILL.md が見つかりません: {skill_path}/SKILL.md. スキルディレクトリを確認してください。」
-4. Glob で `{skill_path}/**/*.md` を実行し `{file_list}` を構成する
-5. `{skill_name}` = `{skill_path}` の末尾ディレクトリ名
-6. `{timestamp}` = `date +%Y%m%d-%H%M%S` の出力（Bash）
-7. `{work_dir}` = `.skill_audit/{skill_name}/run-{timestamp}`
-8. `{skill_audit_path}` = `.claude/skills/skill_audit` の絶対パス（テンプレート参照用）
-9. `mkdir -p {work_dir}` を実行する（Bash）
-10. 自己改善検出: `{skill_name}` が `skill_audit` と一致する場合は警告出力:
-   「注意: このスキル自身を改善対象としています。変更は次回の実行から反映されます。改善完了後、新しいターミナルセッションでスキルを再実行して変更を確認してください。」
-11. `{force_mode}` が true の場合はテキスト出力: `force モード: 全確認を自動判定で通過します`
+5. Glob で `{skill_path}/**/*.md` を実行し `{file_list}` を構成する
+6. `{skill_name}` = `{skill_path}` の末尾ディレクトリ名
+7. `{timestamp}` = `date +%Y%m%d-%H%M%S` の出力（Bash）
+8. `{work_dir}` = `.skill_audit/{skill_name}/run-{timestamp}`
+9. `{skill_audit_path}` = `.claude/skills/skill_audit` の絶対パス（テンプレート参照用）
+10. `mkdir -p {work_dir}` を実行する（Bash）
+11. `{resolved_issues_path}` = `.skill_audit/{skill_name}/resolved-issues.md` の絶対パス
+12. `{resolved_issues_path}` が存在しない場合: 以下の内容で Write して空ファイルを作成する:
+    ```
+    # Resolved Issues: {skill_name}
+    ```
+    存在する場合: テキスト出力: 「resolved-issues.md を検出。レビューアーに既知の解決済み指摘として提供します」
+13. 自己改善検出: `{skill_name}` が `skill_audit` と一致する場合は警告出力:
+    「注意: このスキル自身を改善対象としています。変更は次回の実行から反映されます。改善完了後、新しいターミナルセッションでスキルを再実行して変更を確認してください。」
+14. `{force_mode}` が true の場合はテキスト出力: `force モード: 全確認を自動判定で通過します`
 
 ---
 
@@ -57,7 +63,7 @@ Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 を順に実行します。
 
 `Task` ツールで以下を実行する（`subagent_type: "general-purpose"`, `model: "sonnet"`）:
 
-`{skill_audit_path}/templates/analyze-skill-structure.md` を Read で読み込み、その内容に従って処理を実行してください。
+`{skill_audit_path}/agents/skill-structure-analyzer.md` を Read で読み込み、その内容に従って処理を実行してください。
 パス変数:
 - `{skill_path}`: スキルディレクトリの絶対パス
 - `{skill_name}`: スキル名
@@ -80,21 +86,22 @@ Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 を順に実行します。
 
 以下の5つを `Task` ツールで**1つのメッセージで並列に**起動する（`subagent_type: "general-purpose"`, `model: "sonnet"`）:
 
-| テンプレート | 結果保存先 |
+| エージェント | 結果保存先 |
 |-------------|-----------|
-| `reviewer-stability.md` | `{work_dir}/review-stability.md` |
-| `reviewer-efficiency.md` | `{work_dir}/review-efficiency.md` |
-| `reviewer-ux.md` | `{work_dir}/review-ux.md` |
-| `reviewer-architecture.md` | `{work_dir}/review-architecture.md` |
-| `reviewer-effectiveness.md` | `{work_dir}/review-effectiveness.md` |
+| `agents/stability-reviewer.md` | `{work_dir}/review-stability.md` |
+| `agents/efficiency-reviewer.md` | `{work_dir}/review-efficiency.md` |
+| `agents/ux-reviewer.md` | `{work_dir}/review-ux.md` |
+| `agents/architecture-reviewer.md` | `{work_dir}/review-architecture.md` |
+| `agents/effectiveness-reviewer.md` | `{work_dir}/review-effectiveness.md` |
 
 各レビューアーへのプロンプト:
 ```
-`{skill_audit_path}/templates/reviewer-{perspective}.md` を Read で読み込み、その内容に従って処理を実行してください。
+`{skill_audit_path}/agents/{perspective}-reviewer.md` を Read で読み込み、その内容に従って処理を実行してください。
 パス変数:
 - {skill_path}: {値}
 - {analysis_path}: {work_dir}/analysis.md の絶対パス
 - {quality_criteria_path}: {skill_audit_path}/quality-criteria.md の絶対パス
+- {resolved_issues_path}: {resolved_issues_path} の値
 - {findings_save_path}: {work_dir}/review-{perspective}.md の絶対パス
 - {skill_name}: {値}
 ```
@@ -120,7 +127,7 @@ Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 を順に実行します。
 `Task`（sonnet）で `{skill_audit_path}/templates/consolidate-reviews.md` に委譲する。パス変数:
 - `{work_dir}`, `{skill_name}`, `{findings_save_path}`: `{work_dir}/findings.md`, `{conflicts_save_path}`: `{work_dir}/conflicts.md`
 
-サブエージェント完了後、返答サマリ（critical, improvement, positive, conflicts, merged, truncated）をテキスト出力する。`truncated` > 0 の場合は「改善提案を {truncated} 件省略しました（重要度の高い上位項目を優先）」を追記する。失敗時: `{force_mode}` が true なら自動で1回リトライし、再失敗時は中止する。`{force_mode}` が false なら AskUserQuestion で「Phase 3 Step 1 が失敗しました: {エラー内容}。リトライしますか？」と確認し、「リトライ」/「中止」の選択肢を提供する。
+サブエージェント完了後、返答サマリ（critical, improvement, positive, conflicts, merged, filtered, truncated）をテキスト出力する。`filtered` > 0 の場合は「関連性フィルタで {filtered} 件除外（動作安定・性能に直結しない指摘）」を追記する。`truncated` > 0 の場合は「改善提案を {truncated} 件省略しました（重要度の高い上位項目を優先）」を追記する。失敗時: `{force_mode}` が true なら自動で1回リトライし、再失敗時は中止する。`{force_mode}` が false なら AskUserQuestion で「Phase 3 Step 1 が失敗しました: {エラー内容}。リトライしますか？」と確認し、「リトライ」/「中止」の選択肢を提供する。
 
 問題が0件（critical + improvement = 0）の場合:
 - positive が 0件なら「全レビューファイルが空です。レビュー失敗の可能性があります。」と警告
@@ -197,7 +204,23 @@ Phase 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 を順に実行します。
 （同形式で承認された改善提案を記載）
 ```
 
-承認数が 0 の場合: 「全ての指摘がスキップされました。改善の適用はありません。」とテキスト出力し、Phase 7 へ直行する。
+承認数が 0 の場合: 「全ての指摘がスキップされました。改善の適用はありません。」とテキスト出力する。
+
+#### Step 2b: スキップされた指摘の resolved-issues.md 記録
+
+スキップ数 > 0 の場合、スキップされた各指摘を `{resolved_issues_path}` に追記する:
+- findings.md の各スキップ指摘から、対象ファイル名（`## {ファイル名}` の見出し配下に配置）、対象セクション（`### {セクション} | {カテゴリ}` 形式の見出し）、問題カテゴリを抽出する
+- 問題カテゴリは指摘の内容から以下のいずれかを選択: `ambiguity`, `format-stability`, `condition-branch`, `idempotency`, `reference-integrity`, `redundant-process`, `data-passing`, `ux-guard`, `template-scope`, `error-resilience`, `data-flow`, `edge-case`, `scope-boundary`
+- 同一の (file, section, category) エントリが既に存在する場合は Edit で上書きし、存在しない場合は該当ファイルの見出しの末尾に追記する
+- フォーマット:
+  ```
+  ### {セクション} | {カテゴリ}
+  - 指摘: {指摘タイトル}
+  - 対応: ユーザー判断でスキップ
+  - run: {timestamp}
+  ```
+
+承認数が 0 の場合: Phase 7 へ直行する。
 
 #### Step 3: 改善計画生成（サブエージェントに委譲）
 
@@ -238,11 +261,35 @@ Phase 5 へ進む。
 
 サブエージェント完了後、テキスト出力: `## Phase 6: 検証結果` + 返答内容。失敗時: `{force_mode}` が true なら自動で1回リトライし、再失敗時は中止する。`{force_mode}` が false なら AskUserQuestion で「Phase 6 が失敗しました: {エラー内容}。リトライしますか？」と確認し、「リトライ」/「中止」の選択肢を提供する。
 
-**判定結果の処理**:
-- `verdict: PASS` → Phase 7 へ進む
-- `verdict: NEEDS_ATTENTION` → 以下の追加修正フローを実行する:
+**検証結果に基づく resolved-issues.md の更新**:
 
-#### NEEDS_ATTENTION 時の追加修正フロー
+`{work_dir}/verification.md` を Read し、「解決済み」判定の指摘を `{resolved_issues_path}` に記録する:
+- 各解決済み指摘について `{work_dir}/approved-findings.md` と `{work_dir}/improvement-plan.md` を参照し、対象ファイル名、対象セクション、問題カテゴリ、改善内容の要約（1行）を抽出する
+- 問題カテゴリは Phase 4 Step 2b と同じ一覧から選択
+- 同一の (file, section, category) エントリが既に存在する場合は Edit で上書きし、存在しない場合は該当ファイルの見出しの末尾に追記する
+- 「部分的解決」の指摘は記録しない（次回 run で再検出させるため）
+- フォーマット:
+  ```
+  ### {セクション} | {カテゴリ}
+  - 指摘: {指摘タイトル}
+  - 対応: {改善内容の要約}
+  - run: {timestamp}
+  ```
+
+**検証結果の処理**:
+- 未解決項目なし（not_addressed = 0 かつ new_issues = 0）→ Phase 7 へ進む
+- 未解決項目あり → 以下の対応方針選択へ
+
+#### 対応方針選択
+
+`{force_mode}` が true の場合: 選択肢「発生した問題にだけ対処する」を自動選択し「force モード: 未解決項目に対して個別対処を自動選択」とテキスト出力する。個別対処フローへ進む。
+
+`{force_mode}` が false の場合: `AskUserQuestion` で方針を確認する:
+- **「対応しない」**: Phase 7 へ直行する
+- **「発生した問題にだけ対処する」**: 個別対処フローへ進む
+- **「やり直す（Phase 2-6 を再実行）」**: Phase 2 に戻り、全フローを再実行する（再実行後も同様に検証・選択を繰り返す）
+
+#### 個別対処フロー
 
 テキスト出力: `### 未解決項目の確認`
 
@@ -291,9 +338,9 @@ Phase 5 へ進む。
 - 承認: {承認数}/{total}件（スキップ: {スキップ数}件）
 - コンフリクト: {N}件 (合意{N}/ユーザー判断{N})
 - 適用改善: {N}件
-- 検証結果: {verdict}
-  ({verdict} が NEEDS_ATTENTION の場合のみ次の行を追加)
-  - 追加修正: {承認数}件適用, {スキップ数}件スキップ
+- 検証結果: {PASS / 未解決項目あり}
+  （未解決項目ありの場合のみ次の行を追加）
+  - 対応: {対応しない / 個別対処（{承認数}件適用, {スキップ数}件スキップ）/ やり直し}
 - 変更: {N}件修正, {M}件新規
 - 作業ディレクトリ: {work_dir}
 ```
