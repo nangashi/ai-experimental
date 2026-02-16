@@ -1,6 +1,7 @@
 ---
 allowed-tools: Bash, Glob, Grep, Read, Write, Edit, Task, AskUserQuestion
 description: GitHub Issueを起点に要件確認・調査・設計・レビュー・Draft PR作成を行うスキル
+disable-model-invocation: true
 ---
 
 GitHub Issueを起点に、要件確認・調査・ADR作成・設計・設計レビューを行い、Draft PRを作成します。

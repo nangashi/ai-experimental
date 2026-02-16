@@ -1,6 +1,7 @@
 ---
 allowed-tools: Bash, Glob, Grep, Read, Write, Edit, Task, AskUserQuestion
 description: 設計に基づきステップ実装・テスト・レビュー・PR Ready化を行うスキル
+disable-model-invocation: true
 ---
 
 設計ドキュメント（design.md）に基づき、実装ステップ計画・ステップごとの実装・テスト・レビューを行い、PRをReady for Reviewにします。

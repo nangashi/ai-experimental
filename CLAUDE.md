@@ -5,24 +5,22 @@ Prompt/agent definition files for Claude Code skills and subagents. Primary arti
 ## Conventions
 
 - `old/` subdirectories contain deprecated files. Do not reference or modify them.
-- `.agent_bench/`, `.agent_audit/`, `.skill_audit/` are transient skill output directories, not edit targets.
 
 ## Workflow
 
 ### Before Starting
-- **Clarify first**: Use the AskUserQuestion tool to confirm unclear or ambiguous requirements before proceeding. This project develops prompt/agent definitions where misinterpreted intent leads to wasted iteration cycles.
-- **Echo understanding**: When receiving complex or multi-step instructions, list your understanding of the requirements as bullet points before starting work. Wait for user confirmation before proceeding. Skip this for simple, unambiguous single-step tasks.
+- **Clarify first**: Confirm unclear or ambiguous requirements before proceeding.
+- **Echo understanding**: List your understanding of the requirements as bullet points before starting work.
 
 ### While Working
-- **One proposal at a time**: When suggesting multiple independent changes, present them individually and use the AskUserQuestion tool to get user approval for each before proceeding. Do not batch unrelated proposals into a single action.
+- **Per-item approval**: When suggesting multiple changes, present each item individually with its problem, risk, importance, and proposed fix. Wait for the user's response before applying or moving to the next item. Do not use AskUserQuestion.
 
-### On Compaction
-- When compacting, preserve: current skill/agent file paths being worked on, phase progress state, and any user decisions made during the session.
-
-## Knowledge
+## Instructions
 
 | file | use-when |
 |------|----------|
-| `.claude/knowledge/agent-utilization-guide.md` | Designing multi-agent tasks or choosing between Task tool subagents and TeamCreate |
-| `.claude/knowledge/prompt-engineering-findings.md` | Designing or restructuring agent/reviewer prompt structure (decomposition, technique selection, bias avoidance) |
-| `.claude/knowledge/ai-coding-antipatterns.md` | Generating or editing code (self-check for dead code accumulation and adjacent code alteration) |
+| `.claude/instructions/agent-utilization-guide.md` | Designing multi-agent tasks or choosing between Task tool subagents and TeamCreate |
+| `.claude/instructions/prompt-engineering-findings.md` | Designing or restructuring agent/reviewer prompt structure (decomposition, technique selection) |
+| `.claude/instructions/llm-evaluation-design.md` | LLM出力の評価ワークフローやルブリックを設計するとき |
+| `.claude/instructions/ai-coding-antipatterns.md` | Generating or editing code (self-check for dead code, design principle boundaries, and over-abstraction) |
+| `.claude/instructions/ai-workflow-design.md` | スキルやマルチステップのAIワークフローを設計するとき |

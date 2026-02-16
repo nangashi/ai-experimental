@@ -28,13 +28,34 @@ Evaluate design-level considerations for each threat category: Spoofing (authent
 
 Evaluate whether authentication flows are designed, whether the authorization model (RBAC/ABAC, etc.) is appropriately selected, and whether API access control and session management design have security issues. Check for explicit design of token storage mechanisms, session timeout policies, and permission models.
 
+**API Endpoint Authorization Checklist:**
+- For each API endpoint handling sensitive operations, verify that authorization checks are explicitly designed
+- Resource access endpoints: Check that ownership/membership verification is specified (e.g., message send requires room membership, file access requires permission check)
+- Administrative endpoints: Verify that admin role/permission checks are designed
+- Cross-tenant operations: Check for tenant isolation enforcement design
+
 ### 3. Data Protection
 
 Evaluate whether protection methods for sensitive data at rest and in transit (encryption algorithms, key management) are appropriate, whether PII classification, retention periods, and deletion policies are designed, and whether privacy requirements are addressed. Verify explicit specification of encryption standards and data handling policies.
 
+**Encryption Coverage Checklist:**
+- External communication: TLS/HTTPS for client-server connections
+- Internal communication: Verify encryption design for backend-to-database, microservice-to-microservice, and API gateway-to-backend segments
+- At rest: Encryption for sensitive data storage (database, file storage, backups)
+
 ### 4. Input Validation & Attack Defense
 
 Evaluate whether external input validation policies are designed, whether countermeasures against injection attacks (SQL/NoSQL/Command/XSS) exist, whether output escaping, CORS/origin control, and CSRF protection are designed, and whether restrictions on risk areas like file uploads are designed.
+
+**Web Security Controls Checklist:**
+- CSRF protection: Verify explicit design of CSRF tokens or SameSite cookie attributes for state-changing APIs
+- CORS configuration: Check that allowed origins are explicitly specified (avoid wildcard for credentialed requests)
+- File upload restrictions: Verify file type validation, size limits, and storage isolation design
+
+**Authentication Endpoint Protection Checklist:**
+- Login/authentication endpoints: Verify that rate limiting is explicitly designed to prevent brute force attacks
+- Password reset endpoints: Check for rate limiting and account enumeration protection
+- Token refresh endpoints: Verify abuse prevention mechanisms are designed
 
 ### 5. Infrastructure, Dependencies & Audit
 
@@ -49,12 +70,4 @@ Evaluate whether vulnerability management policies for third-party libraries exi
 
 ## Output Guidelines
 
-Present your security evaluation findings in a clear, well-organized manner. Organize your analysis logically—by severity, by evaluation criterion, or by architectural component—whichever structure best communicates the security risks identified.
-
-Include the following information in your analysis:
-- Detailed description of identified security issues
-- Impact analysis explaining the potential consequences
-- Specific, actionable countermeasures
-- References to relevant sections of the design document
-
-Prioritize critical and significant issues in your report. Ensure that the most important security concerns are prominently featured.
+Present findings organized by severity or criterion. Include: detailed issue description, impact analysis, specific countermeasures, and references to design document sections. Prioritize critical issues prominently.
