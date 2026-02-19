@@ -71,3 +71,8 @@ Evaluate whether vulnerability management policies for third-party libraries exi
 ## Output Guidelines
 
 Present findings organized by severity or criterion. Include: detailed issue description, impact analysis, specific countermeasures, and references to design document sections. Prioritize critical issues prominently.
+
+**Reporting Rule — Defense Layer Separation:**
+When a security control relies on a single layer (e.g., input validation only at the frontend, CSRF protection relying solely on JWT statelessness), report each layer's insufficiency as a **separate, independent finding**. Do not merge multi-layer issues into a single item. For example:
+- "Frontend-only input validation" and "Missing server-side validation" must each appear as distinct findings.
+- "JWT-based CSRF mitigation" must be reported independently if no additional CSRF countermeasure (CSRF token, SameSite attribute) is explicitly designed, even if the design argues JWT sufficiency.

@@ -16,7 +16,7 @@ disable-model-invocation: true
 
 ## 出力先
 
-- 中間ファイル: `.instruction_extract/{basename}.med.md`（全候補のフィルタ評価 + 通過項目の抽出内容）
+- 中間ファイル: `.skill_output/instruction_extract/{basename}.med.md`（全候補のフィルタ評価 + 通過項目の抽出内容）
 - instruction ファイル: `.claude/instructions/*.md`
 - 一覧: `CLAUDE.md` の `## Instructions and Knowledge` セクション
 
@@ -66,7 +66,7 @@ Phase 1（抽出 → .med.md 生成）→ Phase 2（照合 → 判定テーブ�
 1. `{source_path}` の存在を確認する
 2. `{basename}` をファイル名（.md 除去）から導出する
 3. `{med_version}` = 3（※ extraction.md のフィルタ基準やフォーマット変更時にバンプする）
-4. `{med_path}` = `.instruction_extract/{basename}.med.md` を設定する
+4. `{med_path}` = `.skill_output/instruction_extract/{basename}.med.md` を設定する
 5. `{med_path}` が既に存在するか確認する:
    - 存在する場合: frontmatter の `med_version` を読み取る
      - バージョン一致 → テキスト出力「med ファイルは最新です（v{med_version}）。Phase 2 から再開します。」→ Phase 2 へスキップ

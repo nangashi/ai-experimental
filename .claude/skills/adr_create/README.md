@@ -71,7 +71,7 @@ ADRの主要セクション: ステータス、コンテキスト、前提条件
 
 ### 中間ファイル
 
-`.adr_create/{topic_slug}/` に永続保存:
+`.skill_output/adr_create/{topic_slug}/` に永続保存:
 
 | ファイル | Phase | Level | 内容 |
 |----------|-------|-------|------|

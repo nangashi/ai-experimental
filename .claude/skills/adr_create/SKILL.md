@@ -34,7 +34,7 @@ disable-model-invocation: true
 
 - `{skill_dir}`: このファイルが存在するディレクトリの絶対パス
 - `{topic_slug}`: Phase 0 で生成する英数字+ハイフンのスラッグ（30文字以内）
-- `{work_dir}`: `.adr_create/{topic_slug}/` の絶対パス（プロジェクトルートからの相対）
+- `{work_dir}`: `.skill_output/adr_create/{topic_slug}/` の絶対パス（プロジェクトルートからの相対）
 - `{adr_dir}`: `docs/adr` の絶対パス（プロジェクトルートからの相対）
 
 ## ワークフロー
