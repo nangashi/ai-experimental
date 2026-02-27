@@ -9,18 +9,63 @@ Prompt/agent definition files for Claude Code skills and subagents. Primary arti
 ## Workflow
 
 ### Before Starting
-- **Clarify first**: Confirm unclear or ambiguous requirements before proceeding.
+- **Challenge flawed instructions**: ユーザーの指示に曖昧さ、論理的矛盾、前提の誤り、または目的に対して逆効果となる要素がある場合は、そのまま従わず問題点を指摘し、確認または代替案の提案を行うこと。
 - **Echo understanding**: List your understanding of the requirements as bullet points before starting work.
 
-### While Working
-- **Per-item approval**: When suggesting multiple changes, present each item individually with its problem, risk, importance, and proposed fix. Wait for the user's response before applying or moving to the next item. Do not use AskUserQuestion.
+## Error Handling
+
+### メインエージェント
+
+ツール実行（Bash コマンド、API 呼び出しなど）でエラーが発生した場合:
+- **自動修正可能なエラー**（typo、パス間違い、構文エラー等）: 修正して再実行してよい
+- **データ取得の失敗・欠損**（期待する値が返らない、空結果、API エラー等）: そのまま続行せず、取得できなかった内容と影響範囲をユーザーに報告し、対応方針（リトライ/スキップ/代替手段）を相談する
+
+### サブエージェント（Task）
+
+サブエージェントを起動する際は、以下の方針を Task prompt に含めること:
+- コマンドがエラーを返した場合、またはデータが空・期待する構造と異なる場合は、以降のステップを続行せず、エラー内容と影響範囲を返却に含めて即座に返却する
+
+## Review Guidelines
+
+Claude Codeがユーザーの依頼でレビューを行う場合に適用する。サブエージェントがレビュータスクを行う場合はReview Precautionsのみ適用する
+
+### Output Format
+
+- **該当箇所**: 対象ファイルと行番号、または該当セクション
+- **指摘内容**: 何が問題か、またはどのような設計判断・トレードオフがあるか（事実ベースで記述）
+- **対応案**: 具体的にどう修正・対応するか（抽象的な「改善する」ではなく、変更内容の実例を明記）
+- **判断基準**: 対応判断に影響する文脈情報（既存の制約、依存関係、代替手段の有無など）
+- **重要度**:
+  - 高（必須）: 対応しない場合に目的未達・誤動作・矛盾が発生する
+  - 中（推奨）: 対応により品質・明確性が有意に向上するが、未対応でも動作する
+  - 低（対応任意）: 改善の余地はあるが、現状でも実用上問題ない
+
+### Review Precautions
+
+- **シナリオ走査**: 具体的なシナリオを設定し、レビュー対象の定義・実装のみに従って走査する。動作が一意に定まらない箇所や矛盾を指摘する。
+- **根拠に基づく指摘のみ行う**: 推測や一般論ではなく、指摘対象の具体的な箇所を引用して指摘する。「〜の可能性がある」で終わる指摘には、発生条件を具体的に示す。
+- **変更スコープ内に集中する**: 変更スコープが明確な場合（差分レビュー等）、レビュー対象の変更範囲外への改善提案は行わない。スコープ外で気づいた点はレビュー本体と明確に分離する。
+- **重要度の根拠を示す**: 重要度（高/中/低）の判定は、問題の発生可能性と影響範囲の具体的な根拠に基づく。確信度が低い場合はその旨を明記する。
+- **条件・制約を省略しない**: 「〜すべき」という指摘には、適用条件と例外を明示する。無条件の一般化を避ける。
+- **批判的独立性を保つ**: レビュー対象の意図や設計判断に迎合しない。問題がある場合は明確に指摘する。
+- **指摘の情報密度を保つ**: 各指摘は修正判断に必要な情報を過不足なく含める。
+- **前提条件を明示する**: 指摘の前提が自明でない場合は、指摘の冒頭でその前提を明示する。
+
+### Interaction Flow
+
+0. **設計トリアージ**: 以下に該当する根本的な設計問題がある場合は先に提示し、詳細レビューに進むかユーザーの判断を得る。
+   - 目的・ゴール自体の妥当性に疑義がある（解くべき問題が異なる、前提が誤っている等）
+   - 全体アプローチが目的に対して不適合（詳細を修正しても目的を達成できない）
+   - スコープが過大または過小で、詳細レビューの費用対効果が低い
+1. **個別判断**: 指摘の総件数と重要度内訳を冒頭に提示した上で、Output Formatに従い重要度の高い順に1件ずつ提示する。次の指摘に進む前にユーザーの応答を待つ。
+   - `ok` で採用、自由入力で修正・スキップを指示。
+2. **採否サマリ**: 全件の判断後、採用・スキップの一覧を提示して最終確認する。
+3. **一括適用**: 最終確認後、採用された修正をまとめて適用する。
 
 ## Instructions
 
 | file | use-when |
 |------|----------|
-| `.claude/instructions/agent-utilization-guide.md` | Designing multi-agent tasks or choosing between Task tool subagents and TeamCreate |
-| `.claude/instructions/prompt-engineering-findings.md` | Designing or restructuring agent/reviewer prompt structure (decomposition, technique selection) |
-| `.claude/instructions/llm-evaluation-design.md` | LLM出力の評価ワークフローやルブリックを設計するとき |
-| `.claude/instructions/ai-coding-antipatterns.md` | Generating or editing code (self-check for dead code, design principle boundaries, and over-abstraction) |
-| `.claude/instructions/ai-workflow-design.md` | スキルやマルチステップのAIワークフローを設計するとき |
+| `.claude/instructions/README.md` | instructionsエントリを追加・編集するとき |
+| `.claude/instructions/prompt-design.md` | Designing or restructuring agent/reviewer prompt structure |
+| `.claude/instructions/workflow-design.md` | Designing AI workflow structure, context management, or data flow |

@@ -149,7 +149,7 @@ CSD分類の妥当性を批判的に検証する。
 ### 入力
 
 - `{work_dir}/decision-statement.md`
-- `{work_dir}/csd-final.md`（Level 2/3 の場合のみ）
+- `{work_dir}/csd-final.md`
 
 ### 処理手順
 
@@ -185,7 +185,7 @@ OBJ-2: {名前}
 ### 入力
 
 - `{work_dir}/decision-statement.md`
-- `{work_dir}/csd-final.md`（Level 2/3 の場合のみ）
+- `{work_dir}/csd-final.md`
 - `{work_dir}/objectives.md`
 - `{work_dir}/research.md`
 - `{work_dir}/prior-decisions.md`（存在する場合）
@@ -199,7 +199,7 @@ OBJ-2: {名前}
 3. prior-decisions.md が存在する場合、既存決定との整合性を確認し、矛盾する代替案を提案しない
 4. 他の目的も文脈として理解するが、評価は担当目的のみで行う
 
-**代替案生成**（Level 2/3 のみ）:
+**代替案生成**:
 4. 「この目的を最適化するなら、どのような選択肢があるか？」と考える
 5. 2-4件の代替案を提案する。各案に「なぜこの目的に適しているか」を説明する
 
@@ -218,42 +218,6 @@ OBJ-2: {名前}
 ```
 {objective_id}: {目的名} — 評価完了
 提案代替案: {N}件
-評価済み代替案: {M}件
-```
-
----
-
-## Phase 4: 評価のみ（Level 1 の Objective Evaluator）
-
-### 目的
-
-ユーザーが提供した代替案を担当目的の観点から評価する。代替案生成はスキップ。
-
-### 入力
-
-- `{work_dir}/decision-statement.md`
-- `{work_dir}/alternatives.md`（ユーザーが Phase 0 で提供）
-- `{work_dir}/objectives.md`
-- `{work_dir}/research.md`
-- `{work_dir}/prior-decisions.md`（存在する場合）
-- `{skill_dir}/references/agent-prompts.md` の Objective Evaluator セクション
-- `{objective_id}`: 担当する目的の ID
-
-### 処理手順
-
-1. agent-prompts.md の Objective Evaluator セクションの行動指針を確認する
-2. alternatives.md の全代替案を担当目的の観点から評価する
-3. 各代替案に ◎/○/△/× の評価を付け、利点・欠点・根拠を記述する
-
-### 出力フォーマット
-
-`{evaluation_save_path}` に output-schemas.md の eval-obj-{N}.md フォーマットで保存する。
-「提案した代替案」セクションは「Level 1: 省略」と記載する。
-
-### 返答フォーマット
-
-```
-{objective_id}: {目的名} — 評価完了（Level 1）
 評価済み代替案: {M}件
 ```
 
@@ -335,32 +299,34 @@ OBJ-2: {名前}
 
 全フェーズの結果を人間が最終判断できる形式に統合する。
 
-### 入力（レベルに応じて）
+### 入力
 
-- 全レベル: `{work_dir}/decision-statement.md`, `{work_dir}/objectives.md`, `{work_dir}/alternatives.md`, `{work_dir}/evaluation-matrix.md`
-- 全レベル（存在する場合）: `{work_dir}/prior-decisions.md`
-- Level 2/3: `{work_dir}/csd-final.md`
-- Level 3: `{work_dir}/premortem.md`, `{work_dir}/linked-decisions.md`
-- `{level}`: 実行レベル
+- `{work_dir}/decision-statement.md`, `{work_dir}/objectives.md`, `{work_dir}/alternatives.md`, `{work_dir}/evaluation-matrix.md`
+- `{work_dir}/csd-final.md`
+- `{work_dir}/prior-decisions.md`（存在する場合）
+- `{work_dir}/premortem.md`（`{run_premortem}` == true の場合）
+- `{work_dir}/linked-decisions.md`（`{run_chain_analysis}` == true の場合）
+- `{run_premortem}`: プレモーテム分析の実行有無
+- `{run_chain_analysis}`: 連鎖分析の実行有無
 
 ### 処理手順
 
-1. 全入力ファイルを読み込む
+1. 全入力ファイルを読み込む（存在するもののみ）
 2. 以下の構造で審議サマリーを生成する:
    - 決定ステートメント
    - 関連する既存決定 — prior-decisions.md が存在する場合。存在しない場合は省略
-   - 前提条件（CSD）— Level 1 では「スキップ」
+   - 前提条件（CSD）
    - 判断基準
    - 検討した選択肢
    - トレードオフ行列
-   - リスク分析 — Level 3 のみ
-   - 将来の意思決定への影響 — Level 3 のみ
+   - リスク分析 — `{run_premortem}` == true の場合のみ
+   - 将来の意思決定への影響 — `{run_chain_analysis}` == true の場合のみ
    - 判断ガイド
-   - 不確実性の影響 — Level 2/3（CSD の Doubt 項目が存在する場合）
-3. **不確実性の影響の記述ルール**（Level 2/3、CSD の Doubt 項目が存在する場合）:
+   - 不確実性の影響 — CSD の Doubt 項目が存在する場合
+3. **不確実性の影響の記述ルール**（CSD の Doubt 項目が存在する場合）:
    - csd-final.md の各 Doubt 項目について、「その不確実性が判明した場合に各選択肢の評価がどう変化するか」を記述する
    - 形式: 「{Doubt項目}が判明した場合 → {選択肢の評価への影響}」
-   - Level 1 または Doubt 項目が存在しない場合は省略する
+   - Doubt 項目が存在しない場合は省略する
 4. **判断ガイドの記述ルール**:
    - 条件付き提示のみ: 「{目的}を最優先するなら→{選択肢}が適している。ただし{別の目的}にリスクがある。」
    - 「〜を推奨します」「〜がベストです」は禁止
@@ -387,28 +353,29 @@ OBJ-2: {名前}
 
 ### 入力
 
-- `{work_dir}/` 内の全中間ファイル（レベルに応じて存在するもの）
+- `{work_dir}/` 内の全中間ファイル（実行した分析に応じて存在するもの）
 - `{skill_dir}/references/output-schemas.md` のADRテンプレート
 - `{adr_path}`: ADRファイルの保存先パス
 - `{adr_number}`: ADR番号（4桁ゼロ埋め）
 - `{selected_alternative}`: ユーザーが選択した代替案
 - `{user_rationale}`: ユーザーが提供した選択理由
 - `{accepted_tradeoffs}`: ユーザーが明示した受け入れるトレードオフ
-- `{level}`: 実行レベル
+- `{run_premortem}`: プレモーテム分析の実行有無
+- `{run_chain_analysis}`: 連鎖分析の実行有無
 
 ### 処理手順
 
 1. output-schemas.md のADRテンプレートを読み込む
-2. レベル別セクション省略ルールを確認する
+2. セクション省略ルールを確認する
 3. 中間ファイルからADRの各セクションを構成する:
    - コンテキスト ← decision-statement.md
    - 関連する既存決定 ← prior-decisions.md（存在する場合）。存在しない場合はセクション省略
-   - 前提条件 ← csd-final.md（Level 2/3）またはLevel 1省略注記
+   - 前提条件 ← csd-final.md
    - 判断基準 ← objectives.md
    - 検討した選択肢 ← alternatives.md + evaluation-matrix.md
    - トレードオフ分析 ← evaluation-matrix.md
-   - リスク分析 ← premortem.md（Level 3）または省略注記
-   - 将来の意思決定への影響 ← linked-decisions.md（Level 3）または省略注記
+   - リスク分析 ← premortem.md（実施した場合）。未実施の場合は省略注記
+   - 将来の意思決定への影響 ← linked-decisions.md（実施した場合）。未実施の場合は省略注記
    - 決定 ← `{selected_alternative}`
    - 根拠 ← `{user_rationale}`
    - 受け入れたトレードオフ ← `{accepted_tradeoffs}`

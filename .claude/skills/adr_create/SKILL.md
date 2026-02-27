@@ -12,7 +12,7 @@ disable-model-invocation: true
 /adr_create
 ```
 
-引数なし。対話形式で議題と実行レベルを収集する。
+引数なし。対話形式で議題を収集する。
 
 ## コンテキスト節約の原則
 
@@ -21,14 +21,6 @@ disable-model-invocation: true
 3. サブエージェントからの返答は最小限にする（詳細はファイルに保存させる）
 4. 親コンテキストには要約・メタデータのみ保持する
 5. サブエージェント間のデータ受け渡しはファイル経由で行う（親を中継しない）
-
-## 実行レベル
-
-| レベル | 名称 | 実行フェーズ | 用途 |
-|--------|------|------------|------|
-| Level 1 | 軽量 | 0 → 2 → 4 → 7 → 8 | ユーザーが代替案を提供。CSD/選択肢生成/プレモーテム/連鎖分析スキップ |
-| Level 2 | 標準 | 0 → 1 → 2 → 3+4 → 7 → 8 | 標準的な意思決定プロセス |
-| Level 3 | 完全 | 0 → 1 → 2 → 3+4 → 5 → 6 → 7 → 8 | 完全な審議（リスク分析+将来影響分析を含む） |
 
 ## パス変数
 
@@ -39,7 +31,8 @@ disable-model-invocation: true
 
 ## ワークフロー
 
-Phase 0 で議題と実行レベルを確定し、Level に応じて Phase 1-6 を順次実行する。
+Phase 0 で議題を確定し、Phase 1-4 を順次実行する。
+Phase 4 完了後に追加分析（Phase 5: プレモーテム、Phase 6: 連鎖分析）の実行有無を選択する。
 Phase 7 で審議結果をユーザーに提示し、ユーザーの決定後 Phase 8 で ADR を生成する。
 
 ---
@@ -55,27 +48,12 @@ Phase 7 で審議結果をユーザーに提示し、ユーザーの決定後 Ph
 ユーザーに以下を質問し、応答を待つ:
 「どのような技術的意思決定について審議しますか？背景や制約があれば合わせて教えてください。」
 
-#### Step 2: 実行レベル選択
-
-`AskUserQuestion` で実行レベルを選択させる:
-- Level 1（軽量）: 代替案が明確で、トレードオフの整理のみ必要な場合
-- Level 2（標準）: 制約の確認と代替案の探索も含めた標準的な審議
-- Level 3（完全）: リスク分析と将来影響分析を含む完全な審議
-
-`{level}` を記録する。
-
-#### Step 3: Level 1 の場合 — 代替案収集
-
-`{level}` == 1 の場合のみ:
-ユーザーに以下を質問し、応答を待つ:
-「検討する代替案を2-5件リストしてください。」
-
-#### Step 4: 作業ディレクトリ作成
+#### Step 2: 作業ディレクトリ作成
 
 1. 議題から `{topic_slug}` を生成する（英数字+ハイフン、30文字以内。日本語はローマ字化）
 2. `Bash`: `mkdir -p {work_dir}`
 
-#### Step 5: 決定ステートメント策定
+#### Step 3: 決定ステートメント策定
 
 ユーザーの議題テキストから、以下を親エージェントがインラインで処理する:
 
@@ -85,19 +63,14 @@ Phase 7 で審議結果をユーザーに提示し、ユーザーの決定後 Ph
 
 output-schemas.md の decision-statement.md フォーマットに従い、`{work_dir}/decision-statement.md` に Write で保存する。
 
-#### Step 6: ユーザー確認
+#### Step 4: ユーザー確認
 
 決定ステートメントの内容をユーザーに提示し、応答を待つ:
 「修正があればお知らせください。問題なければ『ok』と回答してください。」
-- 承認（ok等）: 次のフェーズへ
-- 修正指示あり: 修正を反映して Step 5 を再実行
+- 承認（ok等）: 次のステップへ
+- 修正指示あり: 修正を反映して Step 3 を再実行
 
-#### Step 7: Level 1 の代替案保存
-
-`{level}` == 1 の場合: Step 3 で収集した代替案を `{work_dir}/alternatives.md` に保存する。
-output-schemas.md の alternatives.md フォーマットに準拠する。提案元は「ユーザー提供」とする。
-
-#### Step 8: リサーチ
+#### Step 5: リサーチ
 
 Task（sonnet）でリサーチャーサブエージェントを起動:
 
@@ -113,7 +86,7 @@ Task（sonnet）でリサーチャーサブエージェントを起動:
 
 サブエージェントは `{work_dir}/research.md` に保存し、件数サマリーを返す。
 
-#### Step 9: 既存ADR参照
+#### Step 6: 既存ADR参照
 
 1. Glob で `{adr_dir}/[0-9][0-9][0-9][0-9]-*.md` を検索
 2. ファイルが存在しない場合: スキップ。`{has_prior_decisions}` = false を記録
@@ -136,19 +109,14 @@ Task（sonnet）でリサーチャーサブエージェントを起動:
 ```
 ## Phase 0 完了
 - 議題: {topic の要約}
-- 実行レベル: Level {level}
 - 作業ディレクトリ: {work_dir}
 - リサーチ: {N}件の調査結果
 - 既存ADR: {N}件（関連: {M}件）※ 既存ADRがない場合は「なし」
 ```
 
-**次フェーズ**: `{level}` == 1 → Phase 2 へ、それ以外 → Phase 1 へ
-
 ---
 
 ### Phase 1: CSD分類
-
-**スキップ条件**: `{level}` == 1
 
 ```
 ## Phase 1: CSD分類
@@ -244,13 +212,9 @@ Task（sonnet）でファシリテーターサブエージェントを起動:
 - {OBJ-1 名前}, {OBJ-2 名前}, ...
 ```
 
-**次フェーズ**: `{level}` == 1 → Phase 4（評価のみ）へ、それ以外 → Phase 3+4 へ
-
 ---
 
 ### Phase 3+4: 代替案生成・評価
-
-**スキップ条件**: `{level}` == 1（代わりに Phase 4 評価のみを実行）
 
 ```
 ## Phase 3+4: 代替案生成・評価
@@ -282,7 +246,19 @@ Task（sonnet）でファシリテーターサブエージェントを起動:
 2. 提案された代替案を統合・重複排除する
 3. 統合結果を `{work_dir}/alternatives.md` に Write で保存する
 
-#### Step 3: 評価マトリクス統合
+#### Step 3: 代替案のユーザー確認
+
+統合した代替案の一覧をユーザーに提示し、応答を待つ:
+- 各代替案の名称と概要を表示
+「追加したい選択肢や削除したい選択肢があればお知らせください。問題なければ『ok』と回答してください。」
+- 承認（ok等）: Step 4 へ
+- 追加指示あり:
+  1. 追加の代替案を `{work_dir}/alternatives.md` に反映する
+  2. 追加分のみ各 Objective Evaluator に再評価を依頼する（Step 1 と同様に `{objective_count}` 個の Task を並列起動。ただし指示に「alternatives.md の追加分のみを評価対象とし、既存評価に追記すること」を加える）
+  3. 再評価完了後、追加結果を各 `eval-obj-{N}.md` に追記する
+- 削除指示あり: 該当の代替案を `alternatives.md` および各 `eval-obj-{N}.md` から削除する
+
+#### Step 4: 評価マトリクス統合
 
 1. 各 eval-obj-{N}.md の評価結果を統合する
 2. alternatives.md の代替案 × objectives.md の目的 のマトリクスを構成する
@@ -291,50 +267,64 @@ Task（sonnet）でファシリテーターサブエージェントを起動:
 ```
 ## Phase 3+4 完了
 - 評価エージェント: {objective_count}件
-- 検出された代替案: {N}件
+- 検出された代替案: {N}件（ユーザー追加: {M}件）
 ```
-
-Phase 5 へ（Level 3）または Phase 7 へ（Level 2）
 
 ---
 
-### Phase 4: 評価のみ（Level 1）
-
-**実行条件**: `{level}` == 1
+### 追加分析の選択
 
 ```
-## Phase 4: 評価（Level 1）
+## 追加分析の選択
 ```
 
-Phase 3+4 の Step 1 と同様だが、サブエージェントへの指示で Phase 3+4 の代わりに「Phase 4（Level 1）」セクションを参照させる。
+Phase 3+4 の結果を踏まえ、追加分析の実行有無をユーザーに確認する。
+
+#### Step 1: 推奨の生成
+
+以下の基準に基づき、各分析の推奨（推奨/任意）を判定する:
+
+**プレモーテム分析（Phase 5）**:
+- **推奨**: 以下のいずれかに該当する場合
+  - decision-statement.md の可逆性が high
+  - csd-final.md の不確実（Doubt）が 3件以上
+  - evaluation-matrix.md で上位2案の評価が僅差（◎/○の差が1つ以内の目的が過半数）
+- **任意**: 上記に該当しない場合
+
+**連鎖分析（Phase 6）**:
+- **推奨**: 以下のいずれかに該当する場合
+  - decision-statement.md の可逆性が high
+  - 決定が基盤的な性質を持つ（フレームワーク・アーキテクチャ・データモデル等、後続の決定を制約するもの。decision-statement.md のスコープから判断）
+  - prior-decisions.md に関連ADRが存在する（決定の連鎖が既にある）
+- **任意**: 上記に該当しない場合
+
+#### Step 2: ユーザーに確認
+
+推奨理由とともに `AskUserQuestion` で実行する分析を質問する:
 
 ```
-`{skill_dir}/references/phase-specifications.md` の「Phase 4: 評価のみ」セクションを Read で読み込み、
-`{skill_dir}/references/agent-prompts.md` の「Objective Evaluator」セクションを Read で読み込み、
-その内容に従って処理を実行してください。
+プレモーテム分析: {推奨|任意}
+{推奨理由を1行で}
 
-パス変数:
-- {work_dir}: {値}
-- {skill_dir}: {値}
-- {objective_id}: OBJ-{N}
-- {evaluation_save_path}: {work_dir}/eval-obj-{N}.md の絶対パス
+連鎖分析: {推奨|任意}
+{推奨理由を1行で}
+
+実行する追加分析を選択してください。
 ```
 
-全サブエージェント完了後、Phase 3+4 の Step 3 と同じ方法で evaluation-matrix.md を生成する。
+選択肢:
+- 両方実行
+- プレモーテムのみ
+- 連鎖分析のみ
+- スキップ（追加分析なし）
 
-```
-## Phase 4 完了（Level 1）
-- 評価エージェント: {objective_count}件
-- 評価した代替案: {N}件
-```
-
-Phase 7 へ
+`{run_premortem}` と `{run_chain_analysis}` を記録する。
 
 ---
 
 ### Phase 5: プレモーテム分析
 
-**スキップ条件**: `{level}` != 3
+**スキップ条件**: `{run_premortem}` == false
 
 ```
 ## Phase 5: プレモーテム分析
@@ -364,7 +354,7 @@ Task（sonnet）でプレモーテムアナリストを起動:
 
 ### Phase 6: 連鎖する意思決定の検証
 
-**スキップ条件**: `{level}` != 3
+**スキップ条件**: `{run_chain_analysis}` == false
 
 ```
 ## Phase 6: 連鎖する意思決定
@@ -408,7 +398,8 @@ Task（sonnet）でファシリテーターサブエージェントを起動:
 パス変数:
 - {work_dir}: {値}
 - {skill_dir}: {値}
-- {level}: {値}
+- {run_premortem}: {値}
+- {run_chain_analysis}: {値}
 ```
 
 サブエージェントは `{work_dir}/deliberation-summary.md` に保存し、件数サマリーを返す。
@@ -466,7 +457,8 @@ Task（sonnet）でADR生成サブエージェントを起動:
 - {selected_alternative}: {値}
 - {user_rationale}: {値}
 - {accepted_tradeoffs}: {値}
-- {level}: {値}
+- {run_premortem}: {値}
+- {run_chain_analysis}: {値}
 ```
 
 サブエージェントは `{adr_path}` に ADR を Write で保存する。
@@ -476,9 +468,9 @@ Task（sonnet）でADR生成サブエージェントを起動:
 ```
 ## adr_create 完了
 - 議題: {topic の要約}
-- 実行レベル: Level {level}
 - 判断基準: {objective_count}件
 - 検討した選択肢: {alternative_count}件
+- 追加分析: プレモーテム={実施/スキップ}, 連鎖分析={実施/スキップ}
 - 採用: {selected_alternative}
 - ADR: {adr_path}
 - 作業ディレクトリ: {work_dir}
