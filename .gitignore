@@ -2,3 +2,7 @@
 .agent_bench/
 .tasks/*/feedback-status.md
 .skill_output/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
